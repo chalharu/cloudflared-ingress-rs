@@ -1,17 +1,14 @@
+mod cli;
+mod controllers;
 mod error;
 
-use std::{sync::Arc, time::Duration};
-
-use crate::error::{Error, Result};
 use actix_web::{get, middleware, App, HttpRequest, HttpResponse, HttpServer, Responder};
-use futures::StreamExt as _;
-use k8s_openapi::api::networking::v1::Ingress;
-use kube::{
-    runtime::{controller::Action, watcher::Config, Controller},
-    Api, Client, ResourceExt,
-};
-use tracing::{info, warn};
+use clap::Parser as _;
+use cli::{Cli, Commands};
+use kube::CustomResourceExt as _;
 use tracing_subscriber::{layer::SubscriberExt as _, util::SubscriberInitExt as _};
+
+pub use crate::error::{ControllerError as Error, Result};
 
 #[get("/health")]
 async fn health(_: HttpRequest) -> impl Responder {
@@ -24,7 +21,9 @@ async fn index(_req: HttpRequest) -> impl Responder {
 }
 
 #[tokio::main]
-async fn main() -> anyhow::Result<()> {
+async fn main() -> Result<()> {
+    let args = Cli::parse();
+
     tracing_subscriber::registry()
         .with(
             tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| "info".into()),
@@ -32,9 +31,28 @@ async fn main() -> anyhow::Result<()> {
         .with(tracing_subscriber::fmt::layer())
         .init();
 
-    // Initiatilize Kubernetes controller state
-    let controller = run();
+    match args.commands() {
+        Commands::CreateYaml => {
+            serde_yaml::to_writer(
+                std::io::stdout(),
+                &controllers::cloudflared::CloudflaredTunnel::crd(),
+            )?;
+        }
+        Commands::Run(args) => {
+            // Both runtimes implements graceful shutdown, so poll until both are done
+            tokio::join!(
+                controllers::ingress::run_controllers(args.clone()),
+                controllers::cloudflared::run_controller(args.clone()),
+                run_server()
+            )
+            .1?;
+        }
+    }
 
+    Ok(())
+}
+
+async fn run_server() -> Result<(), std::io::Error> {
     // Start web server
     let server = HttpServer::new(move || {
         App::new()
@@ -43,41 +61,8 @@ async fn main() -> anyhow::Result<()> {
             .service(health)
     })
     .bind("0.0.0.0:8080")?
+    .workers(2)
     .shutdown_timeout(5);
 
-    // Both runtimes implements graceful shutdown, so poll until both are done
-    tokio::join!(controller, server.run()).1?;
-    Ok(())
-}
-
-/// Initialize the controller and shared state (given the crd is installed)
-pub async fn run() {
-    let client = Client::try_default()
-        .await
-        .expect("failed to create kube Client");
-    let ingress_api = Api::<Ingress>::all(client.clone());
-    Controller::new(ingress_api, Config::default().any_semantic())
-        .shutdown_on_signal()
-        .run(reconcile, error_policy, Arc::new(Context { client }))
-        .filter_map(|x| async move { std::result::Result::ok(x) })
-        .for_each(|_| futures::future::ready(()))
-        .await;
-}
-
-// Context for our reconciler
-#[derive(Clone)]
-struct Context {
-    /// Kubernetes client
-    pub client: Client,
-}
-
-async fn reconcile(ingress: Arc<Ingress>, _ctx: Arc<Context>) -> Result<Action> {
-    let ns = ingress.namespace().unwrap(); // doc is namespace scoped
-    info!("Reconciling Ingress \"{}\" in {}", ingress.name_any(), ns);
-    Ok(Action::requeue(Duration::from_secs(60 * 60)))
-}
-
-fn error_policy(_ingress: Arc<Ingress>, error: &Error, _ctx: Arc<Context>) -> Action {
-    warn!("reconcile failed: {:?}", error);
-    Action::requeue(Duration::from_secs(5 * 60))
+    server.run().await
 }
