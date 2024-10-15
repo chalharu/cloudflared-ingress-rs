@@ -5,24 +5,20 @@ edition = "2021"
 
 [dependencies]
 actix-web = "4.9.0"
-anyhow = "1.0.89"
 base64 = "0.22.1"
 clap = { version = "4.5.20", features = ["derive"] }
 # https://github.com/cloudflare/cloudflare-rs/issues/236 の修正が終わったら元のリポジトリに戻す
 cloudflare = { features = ["blocking", "rustls-tls"], default-features = false, git = "https://github.com/chalharu/cloudflare-rs" }
 futures = "0.3.31"
-futures-util = "0.3.31"
-garde = { version = "0.20.0", features = ["derive", "regex"] }
 k8s-openapi = { version = "0.23.0", features = ["latest"] }
-kube = { version = "0.96.0", features = ["derive", "jsonpatch", "runtime", "unstable-runtime"] }
+kube = { version = "0.96.0", features = ["derive", "runtime", "unstable-runtime"] }
 rand = "0.8.5"
-schemars = { version = "0.8.21", features = ["derive", "chrono"] }
+schemars = { version = "0.8.21", features = ["derive"] }
 serde = { version = "1.0.210", features = ["derive"] }
 serde_json = "1.0.128"
 serde_yaml = "0.9.34"
-snafu = { version = "0.8.5", features = ["backtrace"] }
-thiserror = "1.0.64"
+snafu = { version = "0.8.5", features = ["backtrace", "rust_1_81"] }
 tokio = { version = "1.40.0", features = ["rt-multi-thread", "signal", "macros"] }
 tracing = "0.1.40"
 tracing-subscriber = { version = "0.3.18", features = ["env-filter"] }
-uuid = { version = "1.10.0", features = ["serde", "v4"] }
+uuid = { version = "1.10.0", features = ["v4"] }

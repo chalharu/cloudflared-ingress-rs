@@ -112,14 +112,15 @@ async fn get_services(client: &Client) -> Result<Vec<Service>> {
     Ok(services)
 }
 
+type PartialIngressClass = PartialObjectMeta<IngressClass>;
+
 // Context for our reconciler
 #[derive(Clone)]
 struct Context {
     /// Kubernetes client
     client: Client,
     args: ControllerArgs,
-    target_ingressclass:
-        Arc<Mutex<HashMap<Option<String>, ObjectRef<PartialObjectMeta<IngressClass>>>>>,
+    target_ingressclass: Arc<Mutex<HashMap<Option<String>, ObjectRef<PartialIngressClass>>>>,
 }
 
 async fn run_controller(client: Client, context: Arc<Context>) {
