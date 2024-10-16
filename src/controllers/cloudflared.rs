@@ -417,7 +417,7 @@ impl Context {
                 BTreeMap::from([(TUNNEL_SECRET_KEY.to_string(), ByteString(raw_data.clone()))]);
             api.patch(
                 &secret_ref,
-                &PatchParams::apply(PATCH_PARAMS_APPLY_NAME),
+                &PatchParams::apply(PATCH_PARAMS_APPLY_NAME).force(),
                 &Patch::Apply(Secret {
                     data: Some(data),
                     type_: Some("Opaque".to_string()),

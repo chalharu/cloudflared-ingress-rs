@@ -380,7 +380,7 @@ impl Context {
         cfdt_api
             .patch(
                 name.as_str(),
-                &PatchParams::apply(PATCH_PARAMS_APPLY_NAME),
+                &PatchParams::apply(PATCH_PARAMS_APPLY_NAME).force(),
                 &Patch::Apply(cfd),
             )
             .await?;
