@@ -129,7 +129,6 @@ async fn run_controller(client: Client, context: Arc<Context>) {
     let api_ingressclass = Api::<IngressClass>::all(client.clone());
     let api_ingress = Api::<Ingress>::all(client);
     let (reader_ingressclass, writer_ingressclass) = reflector::store();
-    let (_reader_ingress, writer_ingress) = reflector::store();
 
     // controller main stream from metadata_watcher
     let stream_ingressclass = metadata_watcher(api_ingressclass, Config::default())
@@ -137,18 +136,14 @@ async fn run_controller(client: Client, context: Arc<Context>) {
         .reflect(writer_ingressclass)
         .applied_objects();
 
-    let stream_ingress = watcher(api_ingress, Config::default())
-        .default_backoff()
-        .reflect(writer_ingress)
-        .touched_objects();
+    let stream_ingress = watcher(api_ingress, Config::default()).touched_objects();
 
-    let context_in = context.clone();
+    let target_ingressclass = context.target_ingressclass.clone();
     Controller::for_stream(stream_ingressclass, reader_ingressclass)
         .watches_stream(stream_ingress, move |i| {
-            let context = context_in.clone();
+            let target_ingressclass = target_ingressclass.clone();
             i.spec.and_then(|is| {
-                context
-                    .target_ingressclass
+                target_ingressclass
                     .lock()
                     .unwrap()
                     .get(&is.ingress_class_name)
