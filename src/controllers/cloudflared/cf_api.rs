@@ -195,6 +195,7 @@ impl CloudflareApi {
     pub(super) async fn list_zone(&self) -> Result<Vec<Zone>> {
         use cloudflare::endpoints::zone::{ListZones, ListZonesParams};
         let api = self.api.clone();
+
         let endpoint = ListZones {
             params: ListZonesParams::default(),
         };
@@ -202,5 +203,159 @@ impl CloudflareApi {
         let result = api.request(&endpoint).await?;
 
         Ok(result.result)
+    }
+}
+
+#[cfg(test)]
+mod test {
+    use cloudflare::framework::{
+        async_api::Client as HttpApiClient, auth::Credentials, Environment, HttpApiClientConfig,
+    };
+    use mockito::{Matcher, ServerGuard};
+
+    use super::*;
+
+    async fn start_mock_server() -> ServerGuard {
+        let mut server = mockito::Server::new_async().await;
+
+        // list_cfd_tunnel
+        server
+            .mock("GET", "/accounts/a0000000000000000000000000000001/cfd_tunnel")
+            .match_query(
+                Matcher::AllOf(vec![Matcher::UrlEncoded("is_deleted".into(), "false".into()), Matcher::UrlEncoded("include_prefix".into(), "test-prefix".into())
+            ]))
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(r#"{"result":[],"result_info":{},"success":true,"errors":[],"messages":[]}"#)
+            .create_async()
+            .await;
+
+        // delete dns record
+        server
+            .mock("DELETE", "/zones/00000000000000000000000000000001/dns_records/00000000000000000000000000000002")
+            .with_status(201)
+            .with_header("content-type", "application/json")
+            .with_body(r#"{"result":{"id":"00000000000000000000000000000001"},"result_info":{},"success":true,"errors":[],"messages":[]}"#)
+            .create_async()
+            .await;
+
+        // list zones
+        server
+            .mock("GET", "/zones?")
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(r#"{"result":[
+                {"id":"00000000000000000000000000000001","name":"example.com","status":"active","paused":false,"type":"full","development_mode":0,"name_servers":[],"original_name_servers":[],"original_registrar":null,"original_dnshost":null,"modified_on":"2000-01-01T00:00:00.000000Z","created_on":"2000-01-01T00:00:00.000000Z","activated_on":"2000-01-01T00:00:00.000000Z","meta":{"step":0,"custom_certificate_quota":0,"page_rule_quota":0,"phishing_detected":false},"owner":{"id":null,"type":"user","email":null},"account":{"id":"","name":"Example account"},"tenant":{},"tenant_unit":{},"permissions":[],"plan":{"id":"","name":"","price":0,"currency":"","frequency":"","is_subscribed":false,"can_subscribe":false,"legacy_id":"","legacy_discount":false,"externally_managed":false}}
+            ],"result_info":{},"success":true,"errors":[],"messages":[]}"#)
+            .create_async()
+            .await;
+
+        server
+    }
+
+    async fn create_api_client(url: &str) -> HttpApiClient {
+        let api = HttpApiClient::new(
+            Credentials::UserAuthToken {
+                token: "DEADBEAF".to_string(),
+            },
+            HttpApiClientConfig::default(),
+            Environment::Custom(url::Url::parse(&url).unwrap()),
+        )
+        .unwrap();
+
+        api
+    }
+
+    #[tokio::test]
+    async fn list_tunnels() {
+        let _ = env_logger::try_init();
+        let server = start_mock_server().await;
+        let api = create_api_client(server.url().as_str()).await;
+        let api = CloudflareApi::new(Arc::new(api));
+
+        let response = api
+            .list_tunnels(
+                "a0000000000000000000000000000001".to_string(),
+                "test-prefix".to_string(),
+            )
+            .await
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn get_tunnel_opt() {
+        let _ = env_logger::try_init();
+        let server = start_mock_server().await;
+        let api = create_api_client(server.url().as_str()).await;
+        let api = CloudflareApi::new(Arc::new(api));
+    }
+
+    #[tokio::test]
+    async fn create_tunnel() {
+        let _ = env_logger::try_init();
+        let server = start_mock_server().await;
+        let api = create_api_client(server.url().as_str()).await;
+        let api = CloudflareApi::new(Arc::new(api));
+    }
+
+    #[tokio::test]
+    async fn delete_tunnel() {
+        let _ = env_logger::try_init();
+        let server = start_mock_server().await;
+        let api = create_api_client(server.url().as_str()).await;
+        let api = CloudflareApi::new(Arc::new(api));
+    }
+
+    #[tokio::test]
+    async fn list_dns_cname() {
+        let _ = env_logger::try_init();
+        let server = start_mock_server().await;
+        let api = create_api_client(server.url().as_str()).await;
+        let api = CloudflareApi::new(Arc::new(api));
+    }
+
+    #[tokio::test]
+    async fn list_dns() {
+        let _ = env_logger::try_init();
+        let server = start_mock_server().await;
+        let api = create_api_client(server.url().as_str()).await;
+        let api = CloudflareApi::new(Arc::new(api));
+    }
+
+    #[tokio::test]
+    async fn create_dns_cname() {
+        let _ = env_logger::try_init();
+        let server = start_mock_server().await;
+        let api = create_api_client(server.url().as_str()).await;
+        let api = CloudflareApi::new(Arc::new(api));
+    }
+
+    #[tokio::test]
+    async fn delete_dns_cname() {
+        let _ = env_logger::try_init();
+        let server = start_mock_server().await;
+        let api = create_api_client(server.url().as_str()).await;
+        let api = CloudflareApi::new(Arc::new(api));
+
+        let response = api
+            .delete_dns_cname(
+                "00000000000000000000000000000001".to_string(),
+                "00000000000000000000000000000002".to_string(),
+            )
+            .await
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn list_zone() {
+        let _ = env_logger::try_init();
+        let server = start_mock_server().await;
+        let api = create_api_client(server.url().as_str()).await;
+
+        let api = CloudflareApi::new(Arc::new(api));
+
+        let zone = api.list_zone().await.unwrap();
+        assert_eq!(1, zone.len());
+        assert_eq!("example.com", zone.first().unwrap().name);
     }
 }
