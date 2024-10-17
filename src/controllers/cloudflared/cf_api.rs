@@ -6,7 +6,7 @@ use cloudflare::{
         dns::{DeleteDnsRecordResponse, DnsRecord},
         zone::Zone,
     },
-    framework::{response::ApiFailure, HttpApiClient},
+    framework::{async_api::Client as HttpApiClient, response::ApiFailure},
 };
 use tracing::info;
 
@@ -25,18 +25,15 @@ impl CloudflareApi {
         use cloudflare::endpoints::cfd_tunnel::list_tunnels::{ListTunnels, Params};
         let api = self.api.clone();
 
-        let response = tokio::task::spawn_blocking(move || {
-            let endpoint = ListTunnels {
-                params: Params {
-                    is_deleted: Some(false),
-                    include_prefix: Some(prefix),
-                    ..Default::default()
-                },
-                account_identifier: account_id.as_str(),
-            };
-            api.request(&endpoint)
-        })
-        .await??;
+        let endpoint = ListTunnels {
+            params: Params {
+                is_deleted: Some(false),
+                include_prefix: Some(prefix),
+                ..Default::default()
+            },
+            account_identifier: account_id.as_str(),
+        };
+        let response = api.request(&endpoint).await?;
         Ok(response.result)
     }
 
@@ -48,18 +45,15 @@ impl CloudflareApi {
         use cloudflare::endpoints::cfd_tunnel::list_tunnels::{ListTunnels, Params};
         let api = self.api.clone();
 
-        let response = tokio::task::spawn_blocking(move || {
-            let endpoint = ListTunnels {
-                params: Params {
-                    uuid: Some(tunnel_id),
-                    is_deleted: Some(false),
-                    ..Default::default()
-                },
-                account_identifier: account_id.as_str(),
-            };
-            api.request(&endpoint)
-        })
-        .await??;
+        let endpoint = ListTunnels {
+            params: Params {
+                uuid: Some(tunnel_id),
+                is_deleted: Some(false),
+                ..Default::default()
+            },
+            account_identifier: account_id.as_str(),
+        };
+        let response = api.request(&endpoint).await?;
         Ok(response.result.into_iter().next())
     }
 
@@ -76,19 +70,16 @@ impl CloudflareApi {
         let api = self.api.clone();
         info!("Create cloudflare tunnel: {}", tunnel_name);
 
-        let response = tokio::task::spawn_blocking(move || {
-            let endpoint = CreateTunnel {
-                account_identifier: account_id.as_str(),
-                params: Params {
-                    name: tunnel_name.as_str(),
-                    tunnel_secret: &tunnel_secret,
-                    metadata: None,
-                    config_src: &ConfigurationSrc::Local,
-                },
-            };
-            api.request(&endpoint)
-        })
-        .await??;
+        let endpoint = CreateTunnel {
+            account_identifier: account_id.as_str(),
+            params: Params {
+                name: tunnel_name.as_str(),
+                tunnel_secret: &tunnel_secret,
+                metadata: None,
+                config_src: &ConfigurationSrc::Local,
+            },
+        };
+        let response = api.request(&endpoint).await?;
         Ok(response.result)
     }
 
@@ -98,16 +89,13 @@ impl CloudflareApi {
 
         info!("Delete cloudflare tunnel: {}", tunnel_id);
 
-        tokio::task::spawn_blocking(move || {
-            let endpoint = DeleteTunnel {
-                account_identifier: account_id.as_str(),
-                tunnel_id: &tunnel_id,
-                params: Params { cascade: false },
-            };
-            api.request(&endpoint)
-        })
-        .await?
-        .map_or_else(
+        let endpoint = DeleteTunnel {
+            account_identifier: account_id.as_str(),
+            tunnel_id: &tunnel_id,
+            params: Params { cascade: false },
+        };
+
+        api.request(&endpoint).await.map_or_else(
             |e| match e {
                 // Tunnelが削除済みであった場合、Decode errorが発生する
                 ApiFailure::Invalid(inner) if inner.is_decode() => Ok(()),
@@ -124,20 +112,17 @@ impl CloudflareApi {
     ) -> Result<Vec<DnsRecord>> {
         use cloudflare::endpoints::dns::{DnsContent, ListDnsRecords, ListDnsRecordsParams};
         let api = self.api.clone();
+        let endpoint = ListDnsRecords {
+            zone_identifier: zone_id.as_str(),
+            params: ListDnsRecordsParams {
+                record_type: Some(DnsContent::CNAME {
+                    content: format!("{}.cfargotunnel.com", tunnel_id),
+                }),
+                ..Default::default()
+            },
+        };
 
-        let result = tokio::task::spawn_blocking(move || {
-            let endpoint = ListDnsRecords {
-                zone_identifier: zone_id.as_str(),
-                params: ListDnsRecordsParams {
-                    record_type: Some(DnsContent::CNAME {
-                        content: format!("{}.cfargotunnel.com", tunnel_id),
-                    }),
-                    ..Default::default()
-                },
-            };
-            api.request(&endpoint)
-        })
-        .await??;
+        let result = api.request(&endpoint).await?;
 
         Ok(result.result)
     }
@@ -146,14 +131,12 @@ impl CloudflareApi {
         use cloudflare::endpoints::dns::{ListDnsRecords, ListDnsRecordsParams};
         let api = self.api.clone();
 
-        let result = tokio::task::spawn_blocking(move || {
-            let endpoint = ListDnsRecords {
-                zone_identifier: zone_id.as_str(),
-                params: ListDnsRecordsParams::default(),
-            };
-            api.request(&endpoint)
-        })
-        .await??;
+        let endpoint = ListDnsRecords {
+            zone_identifier: zone_id.as_str(),
+            params: ListDnsRecordsParams::default(),
+        };
+
+        let result = api.request(&endpoint).await?;
 
         Ok(result.result)
     }
@@ -171,22 +154,19 @@ impl CloudflareApi {
             zone_id, target, tunnel_id
         );
 
-        let result = tokio::task::spawn_blocking(move || {
-            let endpoint = CreateDnsRecord {
-                zone_identifier: zone_id.as_str(),
-                params: CreateDnsRecordParams {
-                    name: target.as_str(),
-                    content: DnsContent::CNAME {
-                        content: format!("{}.cfargotunnel.com", tunnel_id),
-                    },
-                    proxied: Some(true),
-                    ttl: None,
-                    priority: None,
+        let endpoint = CreateDnsRecord {
+            zone_identifier: zone_id.as_str(),
+            params: CreateDnsRecordParams {
+                name: target.as_str(),
+                content: DnsContent::CNAME {
+                    content: format!("{}.cfargotunnel.com", tunnel_id),
                 },
-            };
-            api.request(&endpoint)
-        })
-        .await??;
+                proxied: Some(true),
+                ttl: None,
+                priority: None,
+            },
+        };
+        let result = api.request(&endpoint).await?;
 
         Ok(result.result)
     }
@@ -202,15 +182,12 @@ impl CloudflareApi {
             "Delete cloudflare dns cname record: {{ zone_id: {} , dns_record_id: {}}}",
             zone_id, dns_record_id
         );
+        let endpoint = DeleteDnsRecord {
+            zone_identifier: zone_id.as_str(),
+            identifier: dns_record_id.as_str(),
+        };
 
-        let result = tokio::task::spawn_blocking(move || {
-            let endpoint = DeleteDnsRecord {
-                zone_identifier: zone_id.as_str(),
-                identifier: dns_record_id.as_str(),
-            };
-            api.request(&endpoint)
-        })
-        .await??;
+        let result = api.request(&endpoint).await?;
 
         Ok(result.result)
     }
@@ -218,13 +195,11 @@ impl CloudflareApi {
     pub(super) async fn list_zone(&self) -> Result<Vec<Zone>> {
         use cloudflare::endpoints::zone::{ListZones, ListZonesParams};
         let api = self.api.clone();
-        let result = tokio::task::spawn_blocking(move || {
-            let endpoint = ListZones {
-                params: ListZonesParams::default(),
-            };
-            api.request(&endpoint)
-        })
-        .await??;
+        let endpoint = ListZones {
+            params: ListZonesParams::default(),
+        };
+
+        let result = api.request(&endpoint).await?;
 
         Ok(result.result)
     }
