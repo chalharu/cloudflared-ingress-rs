@@ -47,7 +47,7 @@ struct Context {
     /// Kubernetes client
     client: Client,
     args: ControllerArgs,
-    cloudflare_api: Arc<HttpApiClient>,
+    cloudflare_api: CloudflareApi,
 }
 
 pub async fn run_controller(args: ControllerArgs) -> Result<()> {
@@ -57,7 +57,7 @@ pub async fn run_controller(args: ControllerArgs) -> Result<()> {
     let credential = Credentials::UserAuthToken {
         token: args.cloudflare_token().to_string(),
     };
-    let cloudflare_api = Arc::new(
+    let cloudflare_api = CloudflareApi::new(Arc::new(
         tokio::task::spawn_blocking(|| {
             HttpApiClient::new(
                 credential,
@@ -66,7 +66,7 @@ pub async fn run_controller(args: ControllerArgs) -> Result<()> {
             )
         })
         .await??,
-    );
+    ));
 
     let context = Arc::new(Context {
         client: client.clone(),
@@ -115,32 +115,36 @@ impl Context {
             return Ok(());
         };
 
-        let tunnel = get_tunnel_opt(
-            self.args.cloudflare_account_id().to_string(),
-            self.cloudflare_api.clone(),
-            tunnel_id.to_string(),
-        )
-        .await?;
+        let tunnel = self
+            .cloudflare_api
+            .get_tunnel_opt(
+                self.args.cloudflare_account_id().to_string(),
+                tunnel_id.to_string(),
+            )
+            .await?;
 
-        let zones = cf_api::list_zone(self.cloudflare_api.clone()).await?;
+        let zones = self.cloudflare_api.list_zone().await?;
         try_join_all(zones.iter().map(|z| async {
-            let dns_records =
-                list_dns_cname(z.id.clone(), self.cloudflare_api.clone(), tunnel_id.clone())
-                    .await?;
+            let dns_records = self
+                .cloudflare_api
+                .list_dns_cname(z.id.clone(), tunnel_id.clone())
+                .await?;
             for d in dns_records.into_iter() {
-                delete_dns_cname(d.zone_id, self.cloudflare_api.clone(), d.id).await?;
+                self.cloudflare_api
+                    .delete_dns_cname(d.zone_id, d.id)
+                    .await?;
             }
             Result::<_, Error>::Ok(())
         }))
         .await?;
 
         if tunnel.is_some() {
-            delete_tunnel(
-                self.args.cloudflare_account_id().to_string(),
-                self.cloudflare_api.clone(),
-                tunnel_id.clone(),
-            )
-            .await?;
+            self.cloudflare_api
+                .delete_tunnel(
+                    self.args.cloudflare_account_id().to_string(),
+                    tunnel_id.clone(),
+                )
+                .await?;
         }
         Ok(())
     }
@@ -148,13 +152,13 @@ impl Context {
     async fn reconcile(&self) -> Result<()> {
         let cfdt_list = get_cloudflaredtunnel(&self.client).await?;
         let account_id = self.args.cloudflare_account_id().to_string();
-        let cloudflare_api = &self.cloudflare_api;
-        let tunnel_list = list_tunnels(
-            account_id.clone(),
-            cloudflare_api.clone(),
-            self.args.cloudflare_tunnel_prefix().to_string(),
-        )
-        .await?;
+        let tunnel_list = self
+            .cloudflare_api
+            .list_tunnels(
+                account_id.clone(),
+                self.args.cloudflare_tunnel_prefix().to_string(),
+            )
+            .await?;
         let mut tunnel_dic_by_id = tunnel_list
             .into_iter()
             .map(|x| (x.id, x))
@@ -172,14 +176,15 @@ impl Context {
 
         for t in tunnel_dic_by_id {
             if t.1.name.starts_with(self.args.cloudflare_tunnel_prefix()) {
-                if let Err(e) = delete_tunnel(
-                    account_id.clone(),
-                    cloudflare_api.clone(),
-                    t.0.as_hyphenated()
-                        .encode_lower(&mut Uuid::encode_buffer())
-                        .to_string(),
-                )
-                .await
+                if let Err(e) = self
+                    .cloudflare_api
+                    .delete_tunnel(
+                        account_id.clone(),
+                        t.0.as_hyphenated()
+                            .encode_lower(&mut Uuid::encode_buffer())
+                            .to_string(),
+                    )
+                    .await
                 {
                     // tunnel削除の失敗は警告のみとする
                     warn!("Delete cloudflare tunnel failed: {}", e);
@@ -199,13 +204,14 @@ impl Context {
         let tunnel_name_prefix = self.args.cloudflare_tunnel_prefix();
         let uid = Uuid::new_v4().as_hyphenated().to_string();
         let tunnel_name = format!("{tunnel_name_prefix}{uid}");
-        let tunnel = create_tunnel(
-            self.args.cloudflare_account_id().to_string(),
-            self.cloudflare_api.clone(),
-            tunnel_name.to_string(),
-            tunnel_secret.to_owned(),
-        )
-        .await?;
+        let tunnel = self
+            .cloudflare_api
+            .create_tunnel(
+                self.args.cloudflare_account_id().to_string(),
+                tunnel_name.to_string(),
+                tunnel_secret.to_owned(),
+            )
+            .await?;
         patch_cloudflaredtunnel_status(&self.client, namespace, name, |status| {
             status.tunnel_id = Some(tunnel.id.as_hyphenated().to_string())
         })
@@ -231,7 +237,7 @@ impl Context {
         };
 
         // DNS ZoneのリストをCloudflareから取得
-        let zones = cf_api::list_zone(self.cloudflare_api.clone()).await?;
+        let zones = self.cloudflare_api.list_zone().await?;
 
         // CloudflaredTunnel.spec.ingress[].hostnameがどの　DNS Zoneに当てはまるか確認
         let mut dns_list = HashSet::new();
@@ -256,7 +262,8 @@ impl Context {
         // ZoneIDからDNSレコードを引く辞書を作成
         let zone_dns_list = try_join_all(zones.iter().map(|z| async {
             Result::<_, Error>::Ok(
-                cf_api::list_dns(z.id.clone(), self.cloudflare_api.clone())
+                self.cloudflare_api
+                    .list_dns(z.id.clone())
                     .await?
                     .into_iter()
                     .fold(
@@ -319,17 +326,15 @@ impl Context {
             {
                 current_cname_list.remove(&(dns_record.id.clone(), dns_record.zone_id.clone()));
             } else {
-                cf_api::create_dns_cname(
-                    zone_id.clone(),
-                    self.cloudflare_api.clone(),
-                    tunnel_id.clone(),
-                    hostname.clone(),
-                )
-                .await?;
+                self.cloudflare_api
+                    .create_dns_cname(zone_id.clone(), tunnel_id.clone(), hostname.clone())
+                    .await?;
             }
         }
         for (dns_id, zone_id) in current_cname_list {
-            cf_api::delete_dns_cname(zone_id, self.cloudflare_api.clone(), dns_id).await?;
+            self.cloudflare_api
+                .delete_dns_cname(zone_id, dns_id)
+                .await?;
         }
 
         let (tunnel_config_secret_name, secret_updated) = self
