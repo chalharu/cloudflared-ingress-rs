@@ -15,7 +15,9 @@ use cloudflare::{
         cfd_tunnel::Tunnel,
         dns::{DnsContent, DnsRecord},
     },
-    framework::{auth::Credentials, Environment, HttpApiClient, HttpApiClientConfig},
+    framework::{
+        async_api::Client as HttpApiClient, auth::Credentials, Environment, HttpApiClientConfig,
+    },
 };
 pub use customresource::{CloudflaredTunnel, CloudflaredTunnelIngress, CloudflaredTunnelSpec};
 use futures::{
@@ -57,16 +59,11 @@ pub async fn run_controller(args: ControllerArgs) -> Result<()> {
     let credential = Credentials::UserAuthToken {
         token: args.cloudflare_token().to_string(),
     };
-    let cloudflare_api = CloudflareApi::new(Arc::new(
-        tokio::task::spawn_blocking(|| {
-            HttpApiClient::new(
-                credential,
-                HttpApiClientConfig::default(),
-                Environment::Production,
-            )
-        })
-        .await??,
-    ));
+    let cloudflare_api = CloudflareApi::new(Arc::new(HttpApiClient::new(
+        credential,
+        HttpApiClientConfig::default(),
+        Environment::Production,
+    )?));
 
     let context = Arc::new(Context {
         client: client.clone(),

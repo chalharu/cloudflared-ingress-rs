@@ -8,7 +8,7 @@ actix-web = "4.9.0"
 base64 = "0.22.1"
 clap = { version = "4.5.20", features = ["derive", "env"] }
 # https://github.com/cloudflare/cloudflare-rs/issues/236 の修正が終わったら元のリポジトリに戻す
-cloudflare = { features = ["blocking", "mockito", "rustls-tls"], default-features = false, git = "https://github.com/chalharu/cloudflare-rs" }
+cloudflare = { features = ["rustls-tls"], default-features = false, git = "https://github.com/chalharu/cloudflare-rs" }
 futures = "0.3.31"
 k8s-openapi = { version = "0.23.0", features = ["latest"] }
 kube = { version = "0.96.0", features = ["derive", "runtime", "unstable-runtime"] }
