@@ -218,11 +218,18 @@ mod test {
     async fn start_mock_server() -> ServerGuard {
         let mut server = mockito::Server::new_async().await;
 
-        // list_cfd_tunnel
+        // list_tunnel or get_tunnel_opt
         server
-            .mock("GET", "/accounts/a0000000000000000000000000000001/cfd_tunnel")
-            .match_query(
-                Matcher::AllOf(vec![Matcher::UrlEncoded("is_deleted".into(), "false".into()), Matcher::UrlEncoded("include_prefix".into(), "test-prefix".into())
+            .mock(
+                "GET",
+                "/accounts/a0000000000000000000000000000001/cfd_tunnel",
+            )
+            .match_query(Matcher::AllOf(vec![
+                Matcher::UrlEncoded("is_deleted".into(), "false".into()),
+                Matcher::AnyOf(vec![
+                    Matcher::UrlEncoded("include_prefix".into(), "test-prefix".into()),
+                    Matcher::UrlEncoded("uuid".into(), "a0000000000000000000000000000002".into()),
+                ]),
             ]))
             .with_status(200)
             .with_header("content-type", "application/json")
@@ -250,6 +257,61 @@ mod test {
             .create_async()
             .await;
 
+        // delete tunnel
+        server
+            .mock("DELETE", "/accounts/a0000000000000000000000000000001/cfd_tunnel/a0000000000000000000000000000002")
+            .match_query(
+                    Matcher::UrlEncoded("cascade".into(), "false".into()),
+            )
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(r#"{"result":{"id":"00000000000000000000000000000001"},"result_info":{},"success":true,"errors":[],"messages":[]}"#)
+            .create_async()
+            .await;
+
+        // create dns recoad
+        server
+            .mock(
+                "POST",
+                "/zones/00000000000000000000000000000001/dns_records",
+            )
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(r#"{"result":{"id":"a0000000000000000000000000000001","zone_id":"00000000000000000000000000000001","zone_name":"example.com","name":"example.example.com","type":"CNAME","content":"example.com","proxiable":true,"proxied":true,"ttl":1,"settings":{},"meta":{"auto_added":false,"managed_by_apps":false,"managed_by_argo_tunnel":false},"comment":null,"tags":[],"created_on":"2000-01-01T00:00:00.000000Z","modified_on":"2000-01-01T00:00:00.000000Z"},"result_info":{},"success":true,"errors":[],"messages":[]}"#)
+            .create_async()
+            .await;
+
+        // create tunnel
+        server
+            .mock(
+                "POST",
+                "/accounts/a0000000000000000000000000000001/cfd_tunnel",
+            )
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(r#"{"result":{"id":"00000000000000000000000000000001","created_at":"2000-01-01T00:00:00.000000Z","deleted_at":null,"name":"example-tunnel","connections":[],"metadata":{}},"result_info":{},"success":true,"errors":[],"messages":[]}"#)
+            .create_async()
+            .await;
+
+        // list dns records
+        server
+            .mock("GET", "/zones/00000000000000000000000000000001/dns_records")
+            .match_query(Matcher::AnyOf(vec![
+                Matcher::Missing,
+                Matcher::AllOf(vec![
+                    Matcher::UrlEncoded("type".into(), "CNAME".into()),
+                    Matcher::UrlEncoded(
+                        "content".into(),
+                        "a0000000000000000000000000000002.cfargotunnel.com".into(),
+                    ),
+                ]),
+            ]))
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(r#"{"result":[],"result_info":{},"success":true,"errors":[],"messages":[]}"#)
+            .create_async()
+            .await;
+
         server
     }
 
@@ -273,7 +335,7 @@ mod test {
         let api = create_api_client(server.url().as_str()).await;
         let api = CloudflareApi::new(Arc::new(api));
 
-        let response = api
+        let _response = api
             .list_tunnels(
                 "a0000000000000000000000000000001".to_string(),
                 "test-prefix".to_string(),
@@ -288,6 +350,13 @@ mod test {
         let server = start_mock_server().await;
         let api = create_api_client(server.url().as_str()).await;
         let api = CloudflareApi::new(Arc::new(api));
+        let _response = api
+            .get_tunnel_opt(
+                "a0000000000000000000000000000001".to_string(),
+                "a0000000000000000000000000000002".to_string(),
+            )
+            .await
+            .unwrap();
     }
 
     #[tokio::test]
@@ -296,6 +365,14 @@ mod test {
         let server = start_mock_server().await;
         let api = create_api_client(server.url().as_str()).await;
         let api = CloudflareApi::new(Arc::new(api));
+        let _response = api
+            .create_tunnel(
+                "a0000000000000000000000000000001".to_string(),
+                "tunnel-name".to_string(),
+                "tunnel-secret".as_bytes().to_vec(),
+            )
+            .await
+            .unwrap();
     }
 
     #[tokio::test]
@@ -304,6 +381,13 @@ mod test {
         let server = start_mock_server().await;
         let api = create_api_client(server.url().as_str()).await;
         let api = CloudflareApi::new(Arc::new(api));
+        let _response = api
+            .delete_tunnel(
+                "a0000000000000000000000000000001".to_string(),
+                "a0000000000000000000000000000002".to_string(),
+            )
+            .await
+            .unwrap();
     }
 
     #[tokio::test]
@@ -312,6 +396,13 @@ mod test {
         let server = start_mock_server().await;
         let api = create_api_client(server.url().as_str()).await;
         let api = CloudflareApi::new(Arc::new(api));
+        let _response = api
+            .list_dns_cname(
+                "00000000000000000000000000000001".to_string(),
+                "a0000000000000000000000000000002".to_string(),
+            )
+            .await
+            .unwrap();
     }
 
     #[tokio::test]
@@ -320,6 +411,10 @@ mod test {
         let server = start_mock_server().await;
         let api = create_api_client(server.url().as_str()).await;
         let api = CloudflareApi::new(Arc::new(api));
+        let _response = api
+            .list_dns("00000000000000000000000000000001".to_string())
+            .await
+            .unwrap();
     }
 
     #[tokio::test]
@@ -328,6 +423,15 @@ mod test {
         let server = start_mock_server().await;
         let api = create_api_client(server.url().as_str()).await;
         let api = CloudflareApi::new(Arc::new(api));
+
+        let _response = api
+            .create_dns_cname(
+                "00000000000000000000000000000001".to_string(),
+                "a0000000000000000000000000000002".to_string(),
+                "example.example.com".to_string(),
+            )
+            .await
+            .unwrap();
     }
 
     #[tokio::test]
@@ -337,7 +441,7 @@ mod test {
         let api = create_api_client(server.url().as_str()).await;
         let api = CloudflareApi::new(Arc::new(api));
 
-        let response = api
+        let _response = api
             .delete_dns_cname(
                 "00000000000000000000000000000001".to_string(),
                 "00000000000000000000000000000002".to_string(),
