@@ -16,17 +16,17 @@ pub enum Commands {
 
 #[derive(Debug, Clone, Args)]
 pub struct ControllerArgs {
-    #[arg(long)]
+    #[arg(long, env)]
     ingress_class: Option<String>,
-    #[arg(long, default_value = "chalharu.top/cloudflared-ingress-controller")]
+    #[arg(long, env, default_value = "chalharu.top/cloudflared-ingress-controller")]
     ingress_controller: String,
-    #[arg(long)]
+    #[arg(long, env)]
     cloudflare_token: String,
-    #[arg(long)]
+    #[arg(long, env)]
     cloudflare_account_id: String,
-    #[arg(long, default_value = "k8s-ingress-")]
+    #[arg(long, env, default_value = "k8s-ingress-")]
     cloudflare_tunnel_prefix: String,
-    #[arg(long, default_value = "cloudflared")]
+    #[arg(long, env, default_value = "cloudflared")]
     cloudflare_tunnel_namespace: String,
 }
 
