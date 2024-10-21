@@ -128,6 +128,7 @@ pub(super) async fn patch_deployment(
     namespace: &str,
     tunnel_config_secret_name: &str,
     tunnel_id: &str,
+    replicas: i32,
     cfdt: &CloudflaredTunnelSpec,
     owner_ref: Option<Vec<OwnerReference>>,
 ) -> Result<bool> {
@@ -141,7 +142,7 @@ pub(super) async fn patch_deployment(
             ..Default::default()
         },
         spec: Some(DeploymentSpec {
-            replicas: Some(1),
+            replicas: Some(replicas),
             selector: LabelSelector {
                 match_labels: Some(BTreeMap::from([(
                     "app".to_string(),

@@ -1,3 +1,5 @@
+use std::num::TryFromIntError;
+
 use snafu::{
     AsBacktrace, AsErrorSource, Backtrace, Error, ErrorCompat, GenerateImplicitData, IntoError,
     NoneError, Snafu,
@@ -110,6 +112,14 @@ pub enum ControllerError {
         #[snafu(backtrace)]
         backtrace: Backtrace,
     },
+
+    #[snafu(display("Convert from int error: {source}"))]
+    TryFromIntError {
+        #[snafu(source)]
+        source: TryFromIntError,
+        #[snafu(backtrace)]
+        backtrace: Backtrace,
+    },
 }
 
 impl From<serde_json::Error> for ControllerError {
@@ -181,6 +191,12 @@ impl From<std::string::FromUtf8Error> for ControllerError {
 impl From<rand::Error> for ControllerError {
     fn from(value: rand::Error) -> Self {
         RandSnafu.into_error(value)
+    }
+}
+
+impl From<TryFromIntError> for ControllerError {
+    fn from(value: TryFromIntError) -> Self {
+        TryFromIntSnafu.into_error(value)
     }
 }
 
