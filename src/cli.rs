@@ -18,7 +18,11 @@ pub enum Commands {
 pub struct ControllerArgs {
     #[arg(long, env)]
     ingress_class: Option<String>,
-    #[arg(long, env, default_value = "chalharu.top/cloudflared-ingress-controller")]
+    #[arg(
+        long,
+        env,
+        default_value = "chalharu.top/cloudflared-ingress-controller"
+    )]
     ingress_controller: String,
     #[arg(long, env)]
     cloudflare_token: String,
@@ -28,6 +32,8 @@ pub struct ControllerArgs {
     cloudflare_tunnel_prefix: String,
     #[arg(long, env, default_value = "cloudflared")]
     cloudflare_tunnel_namespace: String,
+    #[arg(long, env, default_value = "1")]
+    deployment_replicas: usize,
 }
 
 impl ControllerArgs {
@@ -53,6 +59,10 @@ impl ControllerArgs {
 
     pub fn cloudflare_tunnel_namespace(&self) -> &str {
         &self.cloudflare_tunnel_namespace
+    }
+
+    pub fn deployment_replicas(&self) -> usize {
+        self.deployment_replicas
     }
 }
 

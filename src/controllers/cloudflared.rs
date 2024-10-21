@@ -348,6 +348,7 @@ impl Context {
             &namespace,
             &tunnel_config_secret_name,
             &tunnel_id,
+            self.args.deployment_replicas().try_into()?,
             &cfdt.spec,
             Some(vec![owner_ref]),
         )
