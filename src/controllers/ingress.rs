@@ -25,7 +25,11 @@ use serde::de::DeserializeOwned;
 use tracing::{info, warn};
 
 use crate::{
-    cli::ControllerArgs, controllers::cloudflared::CloudflaredTunnelIngress, Error, Result,
+    cli::ControllerArgs,
+    controllers::cloudflared::{
+        CloudflaredTunnelAccess, CloudflaredTunnelIngress, CloudflaredTunnelOriginRequest,
+    },
+    Error, Result,
 };
 
 use super::cloudflared::{CloudflaredTunnel, CloudflaredTunnelSpec};
@@ -240,6 +244,9 @@ impl Context {
     ) -> Result<()> {
         const SERVERSSCHEME_ANNOTATION: &str =
             "cloudflared-ingress.ingress.kubernetes.io/service.serversscheme";
+        const ACCESS_AUD_ANNOTATION: &str = "cloudflared-ingress.ingress.kubernetes.io/service.aud";
+        const ACCESS_TEAM_ANNOTATION: &str =
+            "cloudflared-ingress.ingress.kubernetes.io/service.team";
 
         let ingresses = get_ingresses(&self.client, &ic.name_any(), is_default_class).await?;
         let name = ic.name_any();
@@ -278,6 +285,20 @@ impl Context {
                 .unwrap_or("http")
                 .to_lowercase();
 
+            let aud_tags = i
+                .annotations()
+                .get(ACCESS_AUD_ANNOTATION)
+                .map(String::as_str)
+                .map(|s| {
+                    s.split(',')
+                        .map(str::trim)
+                        .map(str::to_string)
+                        .collect::<Vec<_>>()
+                })
+                .unwrap_or_default();
+
+            let team_name = i.annotations().get(ACCESS_TEAM_ANNOTATION).cloned();
+
             let ns = i.namespace().unwrap();
 
             let Some(spec) = i.spec else {
@@ -294,6 +315,15 @@ impl Context {
                             path_type: "ImplementationSpecific".to_string(),
                         }],
                     });
+
+            let origin_request = team_name.map(|t| CloudflaredTunnelOriginRequest {
+                access: Some(CloudflaredTunnelAccess {
+                    required: true,
+                    team_name: t.to_string(),
+                    aud_tag: aud_tags,
+                }),
+                ..Default::default()
+            });
 
             for r in spec.rules.iter().flat_map(|r| r.iter()) {
                 for p in r
@@ -353,7 +383,7 @@ impl Context {
                         hostname: r.host.clone().ok_or_else(Error::illegal_document)?,
                         service: cfdt_service,
                         path,
-                        origin_request: None,
+                        origin_request: origin_request.clone(),
                     });
                 }
             }

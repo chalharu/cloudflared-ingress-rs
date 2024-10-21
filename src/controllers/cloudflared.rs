@@ -19,7 +19,10 @@ use cloudflare::{
         async_api::Client as HttpApiClient, auth::Credentials, Environment, HttpApiClientConfig,
     },
 };
-pub use customresource::{CloudflaredTunnel, CloudflaredTunnelIngress, CloudflaredTunnelSpec};
+pub use customresource::{
+    CloudflaredTunnel, CloudflaredTunnelAccess, CloudflaredTunnelIngress,
+    CloudflaredTunnelOriginRequest, CloudflaredTunnelSpec,
+};
 use futures::{
     future::{try_join_all, BoxFuture},
     StreamExt as _,

@@ -1,6 +1,8 @@
 use serde::{Deserialize, Serialize};
 
-use super::customresource::{CloudflaredTunnelIngress, CloudflaredTunnelOriginRequest};
+use super::customresource::{
+    CloudflaredTunnelAccess, CloudflaredTunnelIngress, CloudflaredTunnelOriginRequest,
+};
 
 #[derive(Debug, PartialEq, Clone, Serialize, Deserialize)]
 pub struct Credentials {
@@ -59,10 +61,10 @@ pub struct OriginRequest {
         skip_serializing_if = "Option::is_none"
     )]
     pub keep_alive_connections: Option<u32>,
-    #[serde(rename = "tcpKeepAlive", skip_serializing_if = "Option::is_none")]
+    #[serde(rename = "tcpKeepAlive")]
     pub tcp_keep_alive: Option<String>,
-    // #[serde(rename = "access")]
-    // pub access: Option<CloudflaredTunnelAccess>
+    #[serde(rename = "access", skip_serializing_if = "Option::is_none")]
+    pub access: Option<Access>,
 }
 
 #[derive(Debug, PartialEq, Clone, Serialize, Deserialize)]
@@ -75,6 +77,16 @@ pub struct Ingress {
     pub path: Option<String>,
     #[serde(rename = "originRequest", skip_serializing_if = "Option::is_none")]
     pub origin_request: Option<OriginRequest>,
+}
+
+#[derive(Debug, PartialEq, Clone, Serialize, Deserialize)]
+pub struct Access {
+    #[serde(rename = "required")]
+    pub required: bool,
+    #[serde(rename = "teamName")]
+    pub team_name: String,
+    #[serde(rename = "audTag", skip_serializing_if = "Vec::is_empty")]
+    pub aud_tag: Vec<String>,
 }
 
 impl From<CloudflaredTunnelOriginRequest> for OriginRequest {
@@ -95,6 +107,7 @@ impl From<CloudflaredTunnelOriginRequest> for OriginRequest {
             keep_alive_timeout: value.keep_alive_timeout,
             keep_alive_connections: value.keep_alive_connections,
             tcp_keep_alive: value.tcp_keep_alive,
+            access: value.access.map(Into::into),
         }
     }
 }
@@ -106,6 +119,16 @@ impl From<CloudflaredTunnelIngress> for Ingress {
             service: value.service,
             path: value.path,
             origin_request: value.origin_request.map(Into::into),
+        }
+    }
+}
+
+impl From<CloudflaredTunnelAccess> for Access {
+    fn from(value: CloudflaredTunnelAccess) -> Self {
+        Self {
+            required: value.required,
+            team_name: value.team_name,
+            aud_tag: value.aud_tag,
         }
     }
 }
