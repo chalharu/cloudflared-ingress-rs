@@ -50,7 +50,7 @@ pub struct CloudflaredTunnelOriginRequest {
     pub keep_alive_timeout: Option<String>,
     pub keep_alive_connections: Option<u32>,
     pub tcp_keep_alive: Option<String>,
-    // pub access: Option<CloudflaredTunnelAccess>
+    pub access: Option<CloudflaredTunnelAccess>,
 }
 
 #[derive(Debug, PartialEq, Clone, Serialize, Deserialize, JsonSchema, Default)]
@@ -58,4 +58,11 @@ pub struct CloudflaredTunnelStatus {
     pub tunnel_id: Option<String>,
     pub config_secret_ref: Option<String>,
     pub tunnel_secret_ref: Option<String>,
+}
+
+#[derive(Debug, PartialEq, Clone, Serialize, Deserialize, JsonSchema, Default)]
+pub struct CloudflaredTunnelAccess {
+    pub required: bool,
+    pub team_name: String,
+    pub aud_tag: Vec<String>,
 }

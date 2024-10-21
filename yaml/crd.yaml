@@ -44,6 +44,22 @@ spec:
                     origin_request:
                       nullable: true
                       properties:
+                        access:
+                          nullable: true
+                          properties:
+                            aud_tag:
+                              items:
+                                type: string
+                              type: array
+                            required:
+                              type: boolean
+                            team_name:
+                              type: string
+                          required:
+                          - aud_tag
+                          - required
+                          - team_name
+                          type: object
                         ca_pool:
                           nullable: true
                           type: string
@@ -108,6 +124,22 @@ spec:
               origin_request:
                 nullable: true
                 properties:
+                  access:
+                    nullable: true
+                    properties:
+                      aud_tag:
+                        items:
+                          type: string
+                        type: array
+                      required:
+                        type: boolean
+                      team_name:
+                        type: string
+                    required:
+                    - aud_tag
+                    - required
+                    - team_name
+                    type: object
                   ca_pool:
                     nullable: true
                     type: string
