@@ -1,4 +1,4 @@
-name: Renovate config CI
+name: Rust test
 
 on:
   workflow_dispatch:
