@@ -179,14 +179,14 @@ pub(super) async fn patch_deployment(
                         name: name.to_string(),
                         volume_mounts: Some(vec![VolumeMount {
                             mount_path: "/etc/cloudflared".to_string(),
-                            name: "tunne-config".to_string(),
+                            name: "tunnel-config".to_string(),
                             read_only: Some(true),
                             ..Default::default()
                         }]),
                         ..Default::default()
                     }],
                     volumes: Some(vec![Volume {
-                        name: "tunne-config".to_string(),
+                        name: "tunnel-config".to_string(),
                         secret: Some(SecretVolumeSource {
                             default_mode: Some(0o644),
                             optional: Some(false),

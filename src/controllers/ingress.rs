@@ -316,14 +316,20 @@ impl Context {
                         }],
                     });
 
-            let origin_request = team_name.map(|t| CloudflaredTunnelOriginRequest {
-                access: Some(CloudflaredTunnelAccess {
-                    required: true,
-                    team_name: t.to_string(),
-                    aud_tag: aud_tags,
-                }),
-                ..Default::default()
-            });
+            let origin_request = team_name
+                .map(|t| CloudflaredTunnelOriginRequest {
+                    access: Some(CloudflaredTunnelAccess {
+                        required: true,
+                        team_name: t.to_string(),
+                        aud_tag: aud_tags,
+                    }),
+                    no_tls_verify: Some(true),
+                    ..Default::default()
+                })
+                .or(Some(CloudflaredTunnelOriginRequest {
+                    no_tls_verify: Some(true),
+                    ..Default::default()
+                }));
 
             for r in spec.rules.iter().flat_map(|r| r.iter()) {
                 for p in r
