@@ -1,0 +1,221 @@
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  name: cloudflaredtunnels.chalharu.top
+  labels:
+    {{- include "cloudflared-ingress.labels" . | nindent 4 }}
+spec:
+  group: chalharu.top
+  names:
+    categories: []
+    kind: CloudflaredTunnel
+    plural: cloudflaredtunnels
+    shortNames:
+    - cfdt
+    singular: cloudflaredtunnel
+  scope: Namespaced
+  versions:
+  - additionalPrinterColumns: []
+    name: v1alpha1
+    schema:
+      openAPIV3Schema:
+        description: Auto-generated derived type for CloudflaredTunnelSpec via `CustomResource`
+        properties:
+          spec:
+            properties:
+              args:
+                items:
+                  type: string
+                nullable: true
+                type: array
+              command:
+                items:
+                  type: string
+                nullable: true
+                type: array
+              default_ingress_service:
+                type: string
+              image:
+                nullable: true
+                type: string
+              ingress:
+                items:
+                  properties:
+                    hostname:
+                      type: string
+                    origin_request:
+                      nullable: true
+                      properties:
+                        access:
+                          nullable: true
+                          properties:
+                            aud_tag:
+                              items:
+                                type: string
+                              type: array
+                            required:
+                              type: boolean
+                            team_name:
+                              type: string
+                          required:
+                          - aud_tag
+                          - required
+                          - team_name
+                          type: object
+                        ca_pool:
+                          nullable: true
+                          type: string
+                        connect_timeout:
+                          nullable: true
+                          type: string
+                        disable_chunked_encoding:
+                          nullable: true
+                          type: boolean
+                        http2_origin:
+                          nullable: true
+                          type: boolean
+                        http_host_header:
+                          nullable: true
+                          type: string
+                        keep_alive_connections:
+                          format: uint32
+                          minimum: 0.0
+                          nullable: true
+                          type: integer
+                        keep_alive_timeout:
+                          nullable: true
+                          type: string
+                        no_happy_eyeballs:
+                          nullable: true
+                          type: boolean
+                        no_tls_verify:
+                          nullable: true
+                          type: boolean
+                        origin_server_name:
+                          nullable: true
+                          type: string
+                        proxy_address:
+                          nullable: true
+                          type: string
+                        proxy_port:
+                          format: uint16
+                          minimum: 0.0
+                          nullable: true
+                          type: integer
+                        proxy_type:
+                          nullable: true
+                          type: string
+                        tcp_keep_alive:
+                          nullable: true
+                          type: string
+                        tls_timeout:
+                          nullable: true
+                          type: string
+                      type: object
+                    path:
+                      nullable: true
+                      type: string
+                    service:
+                      type: string
+                  required:
+                  - hostname
+                  - service
+                  type: object
+                nullable: true
+                type: array
+              origin_request:
+                nullable: true
+                properties:
+                  access:
+                    nullable: true
+                    properties:
+                      aud_tag:
+                        items:
+                          type: string
+                        type: array
+                      required:
+                        type: boolean
+                      team_name:
+                        type: string
+                    required:
+                    - aud_tag
+                    - required
+                    - team_name
+                    type: object
+                  ca_pool:
+                    nullable: true
+                    type: string
+                  connect_timeout:
+                    nullable: true
+                    type: string
+                  disable_chunked_encoding:
+                    nullable: true
+                    type: boolean
+                  http2_origin:
+                    nullable: true
+                    type: boolean
+                  http_host_header:
+                    nullable: true
+                    type: string
+                  keep_alive_connections:
+                    format: uint32
+                    minimum: 0.0
+                    nullable: true
+                    type: integer
+                  keep_alive_timeout:
+                    nullable: true
+                    type: string
+                  no_happy_eyeballs:
+                    nullable: true
+                    type: boolean
+                  no_tls_verify:
+                    nullable: true
+                    type: boolean
+                  origin_server_name:
+                    nullable: true
+                    type: string
+                  proxy_address:
+                    nullable: true
+                    type: string
+                  proxy_port:
+                    format: uint16
+                    minimum: 0.0
+                    nullable: true
+                    type: integer
+                  proxy_type:
+                    nullable: true
+                    type: string
+                  tcp_keep_alive:
+                    nullable: true
+                    type: string
+                  tls_timeout:
+                    nullable: true
+                    type: string
+                type: object
+              secret_ref:
+                nullable: true
+                type: string
+            required:
+            - default_ingress_service
+            type: object
+          status:
+            nullable: true
+            properties:
+              config_secret_ref:
+                nullable: true
+                type: string
+              tunnel_id:
+                nullable: true
+                type: string
+              tunnel_secret_ref:
+                nullable: true
+                type: string
+            type: object
+        required:
+        - spec
+        title: CloudflaredTunnel
+        type: object
+    served: true
+    storage: true
+    subresources:
+      status: {}
