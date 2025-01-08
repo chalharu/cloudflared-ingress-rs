@@ -28,28 +28,42 @@ spec:
         {{- toYaml . | nindent 8 }}
       {{- end }}
       serviceAccountName: {{ include "cloudflared-ingress.serviceAccountName" . }}
+      {{- with .Values.podSecurityContext }}
       securityContext:
         {{- toYaml .Values.podSecurityContext | nindent 8 }}
+      {{- end }}
       containers:
         - name: {{ .Chart.Name }}
+          {{- with .Values.securityContext }}
           securityContext:
             {{- toYaml .Values.securityContext | nindent 12 }}
+          {{- end }}
           image: "{{ .Values.image.repository }}:{{ .Values.image.tag | default .Chart.AppVersion }}"
           imagePullPolicy: {{ .Values.image.pullPolicy }}
+          {{- with .Values.livenessProbe }}
           livenessProbe:
             {{- toYaml .Values.livenessProbe | nindent 12 }}
+          {{- end }}
+          {{- with .Values.livenessProbe }}
           readinessProbe:
             {{- toYaml .Values.readinessProbe | nindent 12 }}
+          {{- end }}
+          {{- with .Values.resources }}
           resources:
             {{- toYaml .Values.resources | nindent 12 }}
+          {{- end }}
           {{- with .Values.volumeMounts }}
           volumeMounts:
             {{- toYaml . | nindent 12 }}
           {{- end }}
+          {{- with .Values.env }}
           env:
             {{- toYaml .Values.env | nindent 12 }}
+          {{- end }}
+          {{- with .Values.envFrom }}
           envFrom:
-            {{- toYaml .Values.env | nindent 12 }}
+            {{- toYaml .Values.envFrom | nindent 12 }}
+          {{- end }}
           args:
             - run
             - --cloudflare-account-id
