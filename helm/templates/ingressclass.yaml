@@ -1,0 +1,8 @@
+apiVersion: networking.k8s.io/v1
+kind: IngressClass
+metadata:
+  name: cloudflared
+  labels:
+    {{- include "cloudflared-ingress.labels" . | nindent 4 }}
+spec:
+  controller: chalharu.top/cloudflared-ingress-controller
