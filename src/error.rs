@@ -1,4 +1,4 @@
-use std::num::TryFromIntError;
+use std::{convert::Infallible, num::TryFromIntError};
 
 use snafu::{
     AsBacktrace, AsErrorSource, Backtrace, Error, ErrorCompat, GenerateImplicitData, IntoError,
@@ -105,10 +105,8 @@ pub enum ControllerError {
         backtrace: Backtrace,
     },
 
-    #[snafu(display("Rand error: {source}"))]
-    RandError {
-        #[snafu(source)]
-        source: rand::Error,
+    #[snafu(display("Infallible error"))]
+    InfallibleError {
         #[snafu(backtrace)]
         backtrace: Backtrace,
     },
@@ -188,9 +186,9 @@ impl From<std::string::FromUtf8Error> for ControllerError {
     }
 }
 
-impl From<rand::Error> for ControllerError {
-    fn from(value: rand::Error) -> Self {
-        RandSnafu.into_error(value)
+impl From<Infallible> for ControllerError {
+    fn from(_: Infallible) -> Self {
+        InfallibleSnafu.into_error(NoneError)
     }
 }
 
