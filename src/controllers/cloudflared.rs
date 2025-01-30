@@ -35,7 +35,7 @@ use kube::{
     runtime::{controller::Action, finalizer::finalizer, watcher::Config, Controller},
     Api, Client, Resource, ResourceExt as _,
 };
-use rand::{Rng, SeedableRng};
+use rand::{SeedableRng, TryRngCore};
 use tracing::{info, warn};
 use uuid::Uuid;
 
@@ -416,9 +416,9 @@ impl Context {
                 .0
         } else {
             let mut raw_data = vec![0u8; 32];
-            tokio::task::spawn_blocking(rand::rngs::StdRng::from_entropy)
+            tokio::task::spawn_blocking(rand::rngs::StdRng::from_os_rng)
                 .await?
-                .try_fill(raw_data.as_mut_slice())?;
+                .try_fill_bytes(raw_data.as_mut_slice())?;
             let data =
                 BTreeMap::from([(TUNNEL_SECRET_KEY.to_string(), ByteString(raw_data.clone()))]);
             api.patch(
