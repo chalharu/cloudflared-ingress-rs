@@ -26,4 +26,4 @@ uuid = { version = "1.15.1", features = ["v4"] }
 
 [dev-dependencies]
 env_logger = "0.11.6"
-mockito = "1.6.1"
+mockito = "1.7.0"
