@@ -6,7 +6,7 @@ edition = "2021"
 [dependencies]
 actix-web = "4.10.2"
 base64 = "0.22.1"
-clap = { version = "4.5.35", features = ["derive", "env"] }
+clap = { version = "4.5.36", features = ["derive", "env"] }
 # https://github.com/cloudflare/cloudflare-rs/issues/236 の修正が終わったら元のリポジトリに戻す
 cloudflare = { features = ["rustls-tls"], default-features = false, git = "https://github.com/chalharu/cloudflare-rs" }
 futures = "0.3.31"
