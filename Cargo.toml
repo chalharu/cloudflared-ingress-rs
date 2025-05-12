@@ -4,7 +4,7 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
-actix-web = "4.10.2"
+actix-web = "4.11.0"
 base64 = "0.22.1"
 clap = { version = "4.5.38", features = ["derive", "env"] }
 # https://github.com/cloudflare/cloudflare-rs/issues/236 の修正が終わったら元のリポジトリに戻す
