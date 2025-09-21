@@ -13,10 +13,12 @@ use base64::Engine;
 use cloudflare::{
     endpoints::{
         cfd_tunnel::Tunnel,
-        dns::{DnsContent, DnsRecord},
+        dns::dns::{DnsContent, DnsRecord},
     },
     framework::{
-        async_api::Client as HttpApiClient, auth::Credentials, Environment, HttpApiClientConfig,
+        auth::Credentials,
+        client::{async_api::Client as HttpApiClient, ClientConfig},
+        Environment,
     },
 };
 pub use customresource::{
@@ -64,7 +66,7 @@ pub async fn run_controller(args: ControllerArgs) -> Result<()> {
     };
     let cloudflare_api = CloudflareApi::new(Arc::new(HttpApiClient::new(
         credential,
-        HttpApiClientConfig::default(),
+        ClientConfig::default(),
         Environment::Production,
     )?));
 
@@ -131,7 +133,7 @@ impl Context {
                 .await?;
             for d in dns_records.into_iter() {
                 self.cloudflare_api
-                    .delete_dns_cname(d.zone_id, d.id)
+                    .delete_dns_cname(z.id.clone(), d.id)
                     .await?;
             }
             Result::<_, Error>::Ok(())
@@ -269,7 +271,7 @@ impl Context {
                     .fold(
                         HashMap::new(),
                         |mut acc: HashMap<String, Vec<DnsRecord>>, value| {
-                            acc.entry(value.zone_id.clone()).or_default().push(value);
+                            acc.entry(z.id.clone()).or_default().push(value);
                             acc
                         },
                     ),
@@ -294,10 +296,10 @@ impl Context {
         let cname_content = format!("{tunnel_id}.cfargotunnel.com");
         let mut current_cname_list = zone_dns_list
             .iter()
-            .flat_map(|(_, rec)| {
+            .flat_map(|(zone_id, rec)| {
                 rec.iter().flat_map(|rec| match rec.content {
                     DnsContent::CNAME { ref content } if content.as_str() == cname_content => {
-                        Some((rec.id.clone(), rec.zone_id.clone()))
+                        Some((rec.id.clone(), zone_id.clone()))
                     }
                     _ => None,
                 })
@@ -324,7 +326,7 @@ impl Context {
                         })
                 })?
             {
-                current_cname_list.remove(&(dns_record.id.clone(), dns_record.zone_id.clone()));
+                current_cname_list.remove(&(dns_record.id.clone(), zone_id.clone()));
             } else {
                 self.cloudflare_api
                     .create_dns_cname(zone_id.clone(), tunnel_id.clone(), hostname.clone())
