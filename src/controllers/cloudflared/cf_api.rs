@@ -3,10 +3,10 @@ use std::sync::Arc;
 use cloudflare::{
     endpoints::{
         cfd_tunnel::Tunnel,
-        dns::{DeleteDnsRecordResponse, DnsRecord},
-        zone::Zone,
+        dns::dns::{DeleteDnsRecordResponse, DnsRecord},
+        zones::zone::Zone,
     },
-    framework::{async_api::Client as HttpApiClient, response::ApiFailure},
+    framework::{client::async_api::Client as HttpApiClient, response::ApiFailure},
 };
 use tracing::info;
 
@@ -110,7 +110,7 @@ impl CloudflareApi {
         zone_id: String,
         tunnel_id: String,
     ) -> Result<Vec<DnsRecord>> {
-        use cloudflare::endpoints::dns::{DnsContent, ListDnsRecords, ListDnsRecordsParams};
+        use cloudflare::endpoints::dns::dns::{DnsContent, ListDnsRecords, ListDnsRecordsParams};
         let api = self.api.clone();
         let endpoint = ListDnsRecords {
             zone_identifier: zone_id.as_str(),
@@ -128,7 +128,7 @@ impl CloudflareApi {
     }
 
     pub(super) async fn list_dns(&self, zone_id: String) -> Result<Vec<DnsRecord>> {
-        use cloudflare::endpoints::dns::{ListDnsRecords, ListDnsRecordsParams};
+        use cloudflare::endpoints::dns::dns::{ListDnsRecords, ListDnsRecordsParams};
         let api = self.api.clone();
 
         let endpoint = ListDnsRecords {
@@ -147,7 +147,7 @@ impl CloudflareApi {
         tunnel_id: String,
         target: String,
     ) -> Result<DnsRecord> {
-        use cloudflare::endpoints::dns::{CreateDnsRecord, CreateDnsRecordParams, DnsContent};
+        use cloudflare::endpoints::dns::dns::{CreateDnsRecord, CreateDnsRecordParams, DnsContent};
         let api = self.api.clone();
         info!(
             "Create cloudflare dns cname record: {{ zone_id: {} , tunnel_id: {}, tunnel_id: {}}}",
@@ -176,7 +176,7 @@ impl CloudflareApi {
         zone_id: String,
         dns_record_id: String,
     ) -> Result<DeleteDnsRecordResponse> {
-        use cloudflare::endpoints::dns::DeleteDnsRecord;
+        use cloudflare::endpoints::dns::dns::DeleteDnsRecord;
         let api = self.api.clone();
         info!(
             "Delete cloudflare dns cname record: {{ zone_id: {} , dns_record_id: {}}}",
@@ -193,7 +193,7 @@ impl CloudflareApi {
     }
 
     pub(super) async fn list_zone(&self) -> Result<Vec<Zone>> {
-        use cloudflare::endpoints::zone::{ListZones, ListZonesParams};
+        use cloudflare::endpoints::zones::zone::{ListZones, ListZonesParams};
         let api = self.api.clone();
 
         let endpoint = ListZones {
@@ -209,7 +209,9 @@ impl CloudflareApi {
 #[cfg(test)]
 mod test {
     use cloudflare::framework::{
-        async_api::Client as HttpApiClient, auth::Credentials, Environment, HttpApiClientConfig,
+        auth::Credentials,
+        client::{async_api::Client as HttpApiClient, ClientConfig},
+        Environment,
     };
     use mockito::{Matcher, ServerGuard};
 
@@ -320,8 +322,8 @@ mod test {
             Credentials::UserAuthToken {
                 token: "DEADBEAF".to_string(),
             },
-            HttpApiClientConfig::default(),
-            Environment::Custom(url::Url::parse(&url).unwrap()),
+            ClientConfig::default(),
+            Environment::Custom(url.to_string()),
         )
         .unwrap();
 
