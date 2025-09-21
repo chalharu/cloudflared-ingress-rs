@@ -47,7 +47,7 @@ use crate::{cli::ControllerArgs, Error, Result};
 const TUNNEL_SECRET_KEY: &str = "tunnel_secret";
 const CFD_CONFIG_FILENAME: &str = "config.yml";
 const PATCH_PARAMS_APPLY_NAME: &str = "cloudflaredtunnel.chalharu.top";
-const CFD_DEPLOYMENT_IMAGE: &str = "cloudflare/cloudflared:2024.12.2";
+const CFD_DEPLOYMENT_IMAGE: &str = "cloudflare/cloudflared:2025.9.0";
 
 // Context for our reconciler
 struct Context {
