@@ -1,4 +1,4 @@
-FROM alpine:3.22
+FROM alpine:3.23
 
 RUN apk -U --no-cache add rustup gcc musl-dev
 
