@@ -1,20 +1,24 @@
+//! Cloudflared configuration models rendered into Kubernetes Secrets.
+
 use serde::{Deserialize, Serialize};
 
 use super::customresource::{
     CloudflaredTunnelAccess, CloudflaredTunnelIngress, CloudflaredTunnelOriginRequest,
 };
 
-#[derive(Debug, PartialEq, Clone, Serialize, Deserialize)]
+/// Cloudflared tunnel credentials stored alongside the rendered YAML config.
+#[derive(Debug, PartialEq, Eq, Clone, Serialize, Deserialize)]
 pub struct Credentials {
     #[serde(rename = "AccountTag")]
     pub account_tag: String,
     #[serde(rename = "TunnelSecret")]
-    pub tunnel_secret: String, // base64 encoded
+    pub tunnel_secret: String,
     #[serde(rename = "TunnelID")]
     pub tunnel_id: String,
 }
 
-#[derive(Debug, PartialEq, Clone, Serialize, Deserialize)]
+/// Top-level `config.yml` content for the `cloudflared` sidecar.
+#[derive(Debug, PartialEq, Eq, Clone, Serialize, Deserialize)]
 pub struct Config {
     pub tunnel: String,
     #[serde(rename = "credentials-file", skip_serializing_if = "Option::is_none")]
@@ -25,7 +29,8 @@ pub struct Config {
     pub ingress: Vec<Ingress>,
 }
 
-#[derive(Debug, PartialEq, Clone, Serialize, Deserialize)]
+/// Request-level tuning options understood by `cloudflared`.
+#[derive(Debug, PartialEq, Eq, Clone, Serialize, Deserialize, Default)]
 pub struct OriginRequest {
     #[serde(rename = "originServerName", skip_serializing_if = "Option::is_none")]
     pub origin_server_name: Option<String>,
@@ -61,13 +66,14 @@ pub struct OriginRequest {
         skip_serializing_if = "Option::is_none"
     )]
     pub keep_alive_connections: Option<u32>,
-    #[serde(rename = "tcpKeepAlive")]
+    #[serde(rename = "tcpKeepAlive", skip_serializing_if = "Option::is_none")]
     pub tcp_keep_alive: Option<String>,
     #[serde(rename = "access", skip_serializing_if = "Option::is_none")]
     pub access: Option<Access>,
 }
 
-#[derive(Debug, PartialEq, Clone, Serialize, Deserialize)]
+/// A single ingress rule in the rendered Cloudflared config.
+#[derive(Debug, PartialEq, Eq, Clone, Serialize, Deserialize)]
 pub struct Ingress {
     #[serde(rename = "hostname", skip_serializing_if = "Option::is_none")]
     pub hostname: Option<String>,
@@ -79,7 +85,8 @@ pub struct Ingress {
     pub origin_request: Option<OriginRequest>,
 }
 
-#[derive(Debug, PartialEq, Clone, Serialize, Deserialize)]
+/// Cloudflare Access requirements for a rendered ingress.
+#[derive(Debug, PartialEq, Eq, Clone, Serialize, Deserialize)]
 pub struct Access {
     #[serde(rename = "required")]
     pub required: bool,
@@ -138,6 +145,21 @@ mod tests {
     use super::*;
 
     #[test]
+    fn credentials_serialize_with_cloudflared_field_names() {
+        let credentials = Credentials {
+            account_tag: "account".to_string(),
+            tunnel_secret: "secret".to_string(),
+            tunnel_id: "tunnel-id".to_string(),
+        };
+
+        let rendered = serde_json::to_value(credentials).expect("credentials should serialize");
+
+        assert_eq!(rendered["AccountTag"], "account");
+        assert_eq!(rendered["TunnelSecret"], "secret");
+        assert_eq!(rendered["TunnelID"], "tunnel-id");
+    }
+
+    #[test]
     fn origin_request_conversion_preserves_access_configuration() {
         let origin_request = CloudflaredTunnelOriginRequest {
             no_tls_verify: Some(true),
@@ -188,5 +210,39 @@ mod tests {
                 .and_then(|origin_request| origin_request.no_tls_verify),
             Some(true)
         );
+    }
+
+    #[test]
+    fn config_serialization_omits_empty_optional_fields() {
+        let config = Config {
+            tunnel: "tunnel-id".to_string(),
+            credentials_file: None,
+            origin_request: Some(OriginRequest {
+                no_tls_verify: Some(true),
+                ..Default::default()
+            }),
+            ingress: vec![Ingress {
+                hostname: Some("example.com".to_string()),
+                service: "https://service.default.svc".to_string(),
+                path: None,
+                origin_request: Some(OriginRequest {
+                    access: Some(Access {
+                        required: true,
+                        team_name: "team".to_string(),
+                        aud_tag: Vec::new(),
+                    }),
+                    no_tls_verify: Some(true),
+                    ..Default::default()
+                }),
+            }],
+        };
+
+        let rendered = serde_yaml::to_string(&config).expect("config should serialize");
+
+        assert!(rendered.contains("originRequest:"));
+        assert!(rendered.contains("noTLSVerify: true"));
+        assert!(!rendered.contains("credentials-file:"));
+        assert!(!rendered.contains("tcpKeepAlive:"));
+        assert!(!rendered.contains("audTag:"));
     }
 }

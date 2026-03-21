@@ -1,3 +1,5 @@
+//! Cloudflared controller that reconciles CRDs, Cloudflare resources, and backing workloads.
+
 mod cf_api;
 mod cfd_config;
 mod customresource;
@@ -16,9 +18,9 @@ use cloudflare::{
         dns::dns::{DnsContent, DnsRecord},
     },
     framework::{
-        auth::Credentials,
-        client::{async_api::Client as HttpApiClient, ClientConfig},
         Environment,
+        auth::Credentials,
+        client::{ClientConfig, async_api::Client as HttpApiClient},
     },
 };
 pub use customresource::{
@@ -26,28 +28,34 @@ pub use customresource::{
     CloudflaredTunnelOriginRequest, CloudflaredTunnelSpec,
 };
 use futures::{
-    future::{try_join_all, BoxFuture},
     StreamExt as _,
+    future::{BoxFuture, try_join_all},
 };
 use k8s_openapi::{
-    api::core::v1::Secret, apimachinery::pkg::apis::meta::v1::OwnerReference, ByteString,
+    ByteString, api::core::v1::Secret, apimachinery::pkg::apis::meta::v1::OwnerReference,
 };
 use kube::{
-    api::{DeleteParams, ObjectMeta, Patch, PatchParams},
-    runtime::{controller::Action, finalizer::finalizer, watcher::Config, Controller},
     Api, Client, Resource, ResourceExt as _,
+    api::{DeleteParams, ObjectMeta, Patch, PatchParams},
+    runtime::{Controller, controller::Action, finalizer::finalizer, watcher::Config},
 };
-use rand::{SeedableRng, TryRngCore};
+use rand::{Rng, SeedableRng};
 use tracing::{info, warn};
 use uuid::Uuid;
 
 use self::{cf_api::*, kube_api::*};
-use crate::{cli::ControllerArgs, Error, Result};
+use crate::{Error, Result, cli::ControllerArgs};
 
 const TUNNEL_SECRET_KEY: &str = "tunnel_secret";
 const CFD_CONFIG_FILENAME: &str = "config.yml";
 const PATCH_PARAMS_APPLY_NAME: &str = "cloudflaredtunnel.chalharu.top";
 const CFD_DEPLOYMENT_IMAGE: &str = "cloudflare/cloudflared:2026.3.0";
+
+#[derive(Debug, PartialEq, Eq)]
+struct RenderedTunnelConfig {
+    credential_filename: String,
+    secret_data: BTreeMap<String, String>,
+}
 
 fn hostname_matches_zone(hostname: &str, zone_name: &str) -> bool {
     hostname == zone_name || hostname.ends_with(&format!(".{zone_name}"))
@@ -62,6 +70,76 @@ fn best_matching_zone_id<'a>(
         .filter(|(zone_name, _)| hostname_matches_zone(hostname, zone_name))
         .max_by_key(|(zone_name, _)| zone_name.len())
         .map(|(_, zone_id)| zone_id)
+}
+
+#[allow(clippy::result_large_err)]
+fn desired_dns_records(
+    spec: &CloudflaredTunnelSpec,
+    zones: &[cloudflare::endpoints::zones::zone::Zone],
+) -> Result<HashSet<(String, String)>> {
+    let mut dns_list = HashSet::new();
+
+    for ingress in spec
+        .ingress
+        .as_ref()
+        .iter()
+        .flat_map(|ingress| ingress.iter())
+    {
+        let Some(zone_id) = best_matching_zone_id(
+            &ingress.hostname,
+            zones
+                .iter()
+                .map(|zone| (zone.name.as_str(), zone.id.as_str())),
+        )
+        .map(str::to_string) else {
+            return Err(Error::illegal_document());
+        };
+        dns_list.insert((ingress.hostname.clone(), zone_id));
+    }
+
+    Ok(dns_list)
+}
+
+#[allow(clippy::result_large_err)]
+fn render_tunnel_config(
+    account_id: &str,
+    spec: &CloudflaredTunnelSpec,
+    tunnel_id: &str,
+    tunnel_secret: &[u8],
+) -> Result<RenderedTunnelConfig> {
+    let credential = cfd_config::Credentials {
+        account_tag: account_id.to_string(),
+        tunnel_secret: base64::engine::general_purpose::STANDARD.encode(tunnel_secret),
+        tunnel_id: tunnel_id.to_string(),
+    };
+    let credential_filename = format!("{tunnel_id}.json");
+    let credential_string = serde_json::to_string(&credential)?;
+    let config = cfd_config::Config {
+        tunnel: tunnel_id.to_string(),
+        credentials_file: Some(format!("/etc/cloudflared/{credential_filename}")),
+        origin_request: spec.origin_request.as_ref().cloned().map(Into::into),
+        ingress: spec
+            .ingress
+            .as_ref()
+            .iter()
+            .flat_map(|ingress| ingress.iter().cloned().map(Into::into))
+            .chain([cfd_config::Ingress {
+                hostname: None,
+                service: spec.default_ingress_service.clone(),
+                path: None,
+                origin_request: None,
+            }])
+            .collect(),
+    };
+    let config_string = serde_yaml::to_string(&config)?;
+
+    Ok(RenderedTunnelConfig {
+        credential_filename: credential_filename.clone(),
+        secret_data: BTreeMap::from([
+            (credential_filename, credential_string),
+            (CFD_CONFIG_FILENAME.to_string(), config_string),
+        ]),
+    })
 }
 
 // Context for our reconciler
@@ -134,21 +212,18 @@ impl Context {
 
         let tunnel = self
             .cloudflare_api
-            .get_tunnel_opt(
-                self.args.cloudflare_account_id().to_string(),
-                tunnel_id.to_string(),
-            )
+            .get_tunnel_opt(self.args.cloudflare_account_id(), tunnel_id)
             .await?;
 
         let zones = self.cloudflare_api.list_zone().await?;
         try_join_all(zones.iter().map(|z| async {
             let dns_records = self
                 .cloudflare_api
-                .list_dns_cname(z.id.clone(), tunnel_id.clone())
+                .list_dns_cname(z.id.as_str(), tunnel_id)
                 .await?;
             for d in dns_records.into_iter() {
                 self.cloudflare_api
-                    .delete_dns_cname(z.id.clone(), d.id)
+                    .delete_dns_cname(z.id.as_str(), d.id.as_str())
                     .await?;
             }
             Result::<_, Error>::Ok(())
@@ -157,10 +232,7 @@ impl Context {
 
         if tunnel.is_some() {
             self.cloudflare_api
-                .delete_tunnel(
-                    self.args.cloudflare_account_id().to_string(),
-                    tunnel_id.clone(),
-                )
+                .delete_tunnel(self.args.cloudflare_account_id(), tunnel_id)
                 .await?;
         }
         Ok(())
@@ -171,10 +243,7 @@ impl Context {
         let account_id = self.args.cloudflare_account_id().to_string();
         let tunnel_list = self
             .cloudflare_api
-            .list_tunnels(
-                account_id.clone(),
-                self.args.cloudflare_tunnel_prefix().to_string(),
-            )
+            .list_tunnels(account_id.as_str(), self.args.cloudflare_tunnel_prefix())
             .await?;
         let mut tunnel_dic_by_id = tunnel_list
             .into_iter()
@@ -193,14 +262,13 @@ impl Context {
 
         for t in tunnel_dic_by_id {
             if t.1.name.starts_with(self.args.cloudflare_tunnel_prefix()) {
+                let tunnel_id =
+                    t.0.as_hyphenated()
+                        .encode_lower(&mut Uuid::encode_buffer())
+                        .to_string();
                 if let Err(e) = self
                     .cloudflare_api
-                    .delete_tunnel(
-                        account_id.clone(),
-                        t.0.as_hyphenated()
-                            .encode_lower(&mut Uuid::encode_buffer())
-                            .to_string(),
-                    )
+                    .delete_tunnel(account_id.as_str(), &tunnel_id)
                     .await
                 {
                     // tunnel削除の失敗は警告のみとする
@@ -224,9 +292,9 @@ impl Context {
         let tunnel = self
             .cloudflare_api
             .create_tunnel(
-                self.args.cloudflare_account_id().to_string(),
-                tunnel_name.to_string(),
-                tunnel_secret.to_owned(),
+                self.args.cloudflare_account_id(),
+                tunnel_name.as_str(),
+                tunnel_secret,
             )
             .await?;
         patch_cloudflaredtunnel_status(&self.client, namespace, name, |status| {
@@ -255,28 +323,13 @@ impl Context {
 
         // DNS ZoneのリストをCloudflareから取得
         let zones = self.cloudflare_api.list_zone().await?;
-
-        // CloudflaredTunnel.spec.ingress[].hostnameがどの　DNS Zoneに当てはまるか確認
-        let mut dns_list = HashSet::new();
-        for ingress in cfdt.spec.ingress.as_ref().iter().flat_map(|x| x.iter()) {
-            let Some(zone_id) = best_matching_zone_id(
-                &ingress.hostname,
-                zones
-                    .iter()
-                    .map(|zone| (zone.name.as_str(), zone.id.as_str())),
-            )
-            .map(str::to_string) else {
-                // hostnameがzoneに当てはまらない場合
-                return Err(Error::illegal_document());
-            };
-            dns_list.insert((ingress.hostname.clone(), zone_id));
-        }
+        let dns_list = desired_dns_records(&cfdt.spec, &zones)?;
 
         // ZoneIDからDNSレコードを引く辞書を作成
         let zone_dns_list = try_join_all(zones.iter().map(|z| async {
             Result::<_, Error>::Ok(
                 self.cloudflare_api
-                    .list_dns(z.id.clone())
+                    .list_dns(z.id.as_str())
                     .await?
                     .into_iter()
                     .fold(
@@ -304,7 +357,7 @@ impl Context {
         let tunnel_id = tunnel.id.as_hyphenated().to_string();
 
         // {tunnelid}.cfargotunnel.comのCNAMEレコードリストを作成する
-        let cname_content = format!("{tunnel_id}.cfargotunnel.com");
+        let cname_content = tunnel_cname(&tunnel_id);
         let mut current_cname_list = zone_dns_list
             .iter()
             .flat_map(|(zone_id, rec)| {
@@ -318,7 +371,7 @@ impl Context {
             .collect::<HashSet<_>>();
 
         // {tunnelid}.cfargotunnel.com以外のCNAMEレコード、Aレコード・AAAAレコードが無いことを確認する
-        for (ref hostname, ref zone_id) in &dns_list {
+        for (hostname, zone_id) in &dns_list {
             let dns_records = zone_dns_list
                 .get(zone_id)
                 .ok_or_else(Error::illegal_document)?;
@@ -344,13 +397,13 @@ impl Context {
                 current_cname_list.remove(&(dns_record.id.clone(), zone_id.clone()));
             } else {
                 self.cloudflare_api
-                    .create_dns_cname(zone_id.clone(), tunnel_id.clone(), hostname.clone())
+                    .create_dns_cname(zone_id.as_str(), tunnel_id.as_str(), hostname.as_str())
                     .await?;
             }
         }
         for (dns_id, zone_id) in current_cname_list {
             self.cloudflare_api
-                .delete_dns_cname(zone_id, dns_id)
+                .delete_dns_cname(zone_id.as_str(), dns_id.as_str())
                 .await?;
         }
 
@@ -398,13 +451,12 @@ impl Context {
             (sp, st) => {
                 let secret_ref = if let Some(sp) = sp {
                     // もし自分自身が作成したリソースなら削除
-                    if let Some(st) = st {
-                        if let Some(secret) = api.get_opt(st.as_str()).await? {
-                            if secret.owner_references().contains(&owner_ref) {
-                                api.delete(&secret.name_any(), &DeleteParams::background())
-                                    .await?;
-                            }
-                        }
+                    if let Some(st) = st
+                        && let Some(secret) = api.get_opt(st.as_str()).await?
+                        && secret.owner_references().contains(&owner_ref)
+                    {
+                        api.delete(&secret.name_any(), &DeleteParams::background())
+                            .await?;
                     }
                     sp.to_string()
                 } else {
@@ -432,10 +484,14 @@ impl Context {
                 .ok_or_else(Error::illegal_document)?
                 .0
         } else {
-            let mut raw_data = vec![0u8; 32];
-            tokio::task::spawn_blocking(rand::rngs::StdRng::from_os_rng)
-                .await?
-                .try_fill_bytes(raw_data.as_mut_slice())?;
+            let raw_data = tokio::task::spawn_blocking(|| {
+                let mut raw_data = vec![0u8; 32];
+                let mut rng = rand::rngs::StdRng::try_from_rng(&mut rand::rngs::SysRng)
+                    .expect("system RNG should be available");
+                rng.fill_bytes(raw_data.as_mut_slice());
+                raw_data
+            })
+            .await?;
             let data =
                 BTreeMap::from([(TUNNEL_SECRET_KEY.to_string(), ByteString(raw_data.clone()))]);
             api.patch(
@@ -468,43 +524,16 @@ impl Context {
         cfdt: &CloudflaredTunnel,
         owner_ref: OwnerReference,
         tunnel: Tunnel,
-        tunnel_secret: &Vec<u8>,
+        tunnel_secret: &[u8],
     ) -> Result<(String, bool)> {
         let tunnel_id = tunnel.id.as_hyphenated().to_string();
         let ns = cfdt.namespace().ok_or_else(Error::illegal_document)?;
-
-        let credential = cfd_config::Credentials {
-            account_tag: self.args.cloudflare_account_id().to_string(),
-            tunnel_secret: base64::engine::general_purpose::STANDARD
-                .encode(tunnel_secret.as_slice()),
-            tunnel_id: tunnel_id.clone(),
-        };
-        let credential_filename = format!("{tunnel_id}.json");
-
-        let credential_string = serde_json::to_string(&credential)?;
-        let config = cfd_config::Config {
-            tunnel: tunnel_id.clone(),
-            credentials_file: Some(format!("/etc/cloudflared/{}", credential_filename)),
-            origin_request: cfdt.spec.origin_request.as_ref().cloned().map(Into::into),
-            ingress: cfdt
-                .spec
-                .ingress
-                .as_ref()
-                .iter()
-                .flat_map(|x| x.iter().cloned().map(Into::into))
-                .chain([cfd_config::Ingress {
-                    hostname: None,
-                    service: cfdt.spec.default_ingress_service.clone(),
-                    path: None,
-                    origin_request: None,
-                }])
-                .collect(),
-        };
-        let config_string = serde_yaml::to_string(&config)?;
-        let secret_data = BTreeMap::from([
-            (credential_filename, credential_string),
-            (CFD_CONFIG_FILENAME.to_string(), config_string),
-        ]);
+        let rendered = render_tunnel_config(
+            self.args.cloudflare_account_id(),
+            &cfdt.spec,
+            &tunnel_id,
+            tunnel_secret,
+        )?;
 
         let config_ref = if let Some(config_ref) = cfdt
             .status
@@ -530,7 +559,7 @@ impl Context {
             &self.client,
             &config_ref,
             &ns,
-            secret_data,
+            rendered.secret_data,
             Some(vec![owner_ref.clone()]),
         )
         .await?;
@@ -542,6 +571,9 @@ impl Context {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use cloudflare::endpoints::zones::zone::Zone;
+    use serde_json::json;
+    use serde_yaml::Value;
 
     #[test]
     fn best_matching_zone_id_matches_zone_apex() {
@@ -568,5 +600,147 @@ mod tests {
             best_matching_zone_id("badexample.com", [("example.com", "zone-a")]),
             None
         );
+    }
+
+    fn zone(id: &str, name: &str) -> Zone {
+        serde_json::from_value(json!({
+            "id": id,
+            "name": name,
+            "status": "active",
+            "paused": false,
+            "type": "full",
+            "development_mode": 0,
+            "name_servers": [],
+            "original_name_servers": [],
+            "original_registrar": null,
+            "original_dnshost": null,
+            "modified_on": "2000-01-01T00:00:00.000000Z",
+            "created_on": "2000-01-01T00:00:00.000000Z",
+            "activated_on": "2000-01-01T00:00:00.000000Z",
+            "meta": {
+                "step": 0,
+                "custom_certificate_quota": 0,
+                "page_rule_quota": 0,
+                "phishing_detected": false
+            },
+            "owner": {
+                "id": null,
+                "type": "user",
+                "email": null
+            },
+            "account": {
+                "id": "",
+                "name": "Example account"
+            },
+            "tenant": {},
+            "tenant_unit": {},
+            "permissions": [],
+            "plan": {
+                "id": "",
+                "name": "",
+                "price": 0,
+                "currency": "",
+                "frequency": "",
+                "is_subscribed": false,
+                "can_subscribe": false,
+                "legacy_id": "",
+                "legacy_discount": false,
+                "externally_managed": false
+            }
+        }))
+        .expect("zone should deserialize")
+    }
+
+    #[test]
+    fn desired_dns_records_uses_the_most_specific_matching_zone() {
+        let records = desired_dns_records(
+            &CloudflaredTunnelSpec {
+                ingress: Some(vec![
+                    CloudflaredTunnelIngress {
+                        hostname: "api.example.com".to_string(),
+                        service: "https://service".to_string(),
+                        path: None,
+                        origin_request: None,
+                    },
+                    CloudflaredTunnelIngress {
+                        hostname: "app.eu.example.com".to_string(),
+                        service: "https://service".to_string(),
+                        path: None,
+                        origin_request: None,
+                    },
+                ]),
+                default_ingress_service: "http_status:404".to_string(),
+                ..Default::default()
+            },
+            &[
+                zone("zone-a", "example.com"),
+                zone("zone-b", "eu.example.com"),
+            ],
+        )
+        .expect("zones should match");
+
+        assert!(records.contains(&("api.example.com".to_string(), "zone-a".to_string())));
+        assert!(records.contains(&("app.eu.example.com".to_string(), "zone-b".to_string())));
+    }
+
+    #[test]
+    fn desired_dns_records_rejects_hostnames_outside_known_zones() {
+        let result = desired_dns_records(
+            &CloudflaredTunnelSpec {
+                ingress: Some(vec![CloudflaredTunnelIngress {
+                    hostname: "api.other.com".to_string(),
+                    service: "https://service".to_string(),
+                    path: None,
+                    origin_request: None,
+                }]),
+                default_ingress_service: "http_status:404".to_string(),
+                ..Default::default()
+            },
+            &[zone("zone-a", "example.com")],
+        );
+
+        assert!(matches!(result, Err(Error::IllegalDocument { .. })));
+    }
+
+    #[test]
+    fn render_tunnel_config_renders_credentials_and_default_ingress() {
+        let rendered = render_tunnel_config(
+            "account-id",
+            &CloudflaredTunnelSpec {
+                origin_request: Some(CloudflaredTunnelOriginRequest {
+                    no_tls_verify: Some(true),
+                    ..Default::default()
+                }),
+                ingress: Some(vec![CloudflaredTunnelIngress {
+                    hostname: "example.com".to_string(),
+                    service: "https://service.default.svc".to_string(),
+                    path: Some("^/api".to_string()),
+                    origin_request: None,
+                }]),
+                default_ingress_service: "http_status:404".to_string(),
+                ..Default::default()
+            },
+            "tunnel-id",
+            b"secret",
+        )
+        .expect("config should render");
+
+        assert_eq!(rendered.credential_filename, "tunnel-id.json");
+        assert!(rendered.secret_data.contains_key("tunnel-id.json"));
+        assert!(rendered.secret_data.contains_key(CFD_CONFIG_FILENAME));
+        assert!(rendered.secret_data["tunnel-id.json"].contains("\"AccountTag\":\"account-id\""));
+
+        let yaml: Value = serde_yaml::from_str(&rendered.secret_data[CFD_CONFIG_FILENAME])
+            .expect("yaml should parse");
+        assert_eq!(yaml["tunnel"], "tunnel-id");
+        assert_eq!(yaml["credentials-file"], "/etc/cloudflared/tunnel-id.json");
+        assert_eq!(
+            yaml["ingress"]
+                .as_sequence()
+                .expect("ingress should be a list")
+                .len(),
+            2
+        );
+        assert_eq!(yaml["ingress"][1]["service"], "http_status:404");
     }
 }

@@ -1,6 +1,9 @@
+//! Kubernetes resource helpers used by the Cloudflared controller.
+
 use std::collections::BTreeMap;
 
 use k8s_openapi::{
+    ByteString,
     api::{
         apps::v1::{Deployment, DeploymentSpec},
         core::v1::{
@@ -8,18 +11,132 @@ use k8s_openapi::{
         },
     },
     apimachinery::pkg::apis::meta::v1::{LabelSelector, OwnerReference},
-    ByteString,
 };
 use kube::{
-    api::{ListParams, ObjectMeta, Patch, PatchParams},
     Api, Client,
+    api::{ListParams, ObjectMeta, PartialObjectMeta, Patch, PatchParams},
 };
 
 use super::{
+    CFD_DEPLOYMENT_IMAGE, CloudflaredTunnel, PATCH_PARAMS_APPLY_NAME,
     customresource::{CloudflaredTunnelSpec, CloudflaredTunnelStatus},
-    CloudflaredTunnel, CFD_DEPLOYMENT_IMAGE, PATCH_PARAMS_APPLY_NAME,
 };
 use crate::Result;
+
+fn secret_string_data(data: BTreeMap<String, String>) -> BTreeMap<String, ByteString> {
+    data.into_iter()
+        .map(|(key, value)| (key, ByteString(value.into_bytes())))
+        .collect()
+}
+
+fn opaque_secret(
+    name: &str,
+    data: BTreeMap<String, ByteString>,
+    owner_ref: Option<Vec<OwnerReference>>,
+) -> Secret {
+    Secret {
+        metadata: ObjectMeta {
+            name: Some(name.to_string()),
+            owner_references: owner_ref,
+            ..Default::default()
+        },
+        data: Some(data),
+        type_: Some("Opaque".to_string()),
+        ..Default::default()
+    }
+}
+
+fn default_container_args(tunnel_id: &str) -> Vec<String> {
+    vec![
+        "tunnel".to_string(),
+        "--no-autoupdate".to_string(),
+        "--config".to_string(),
+        "/etc/cloudflared/config.yml".to_string(),
+        "run".to_string(),
+        tunnel_id.to_string(),
+    ]
+}
+
+fn deployment_changed(before: Option<&PartialObjectMeta<Deployment>>, after: &Deployment) -> bool {
+    before.is_none_or(|current| current.metadata.generation != after.metadata.generation)
+}
+
+fn secret_changed(before: Option<&Secret>, after: &Secret) -> bool {
+    before
+        .is_none_or(|current| current.metadata.resource_version != after.metadata.resource_version)
+}
+
+fn cloudflared_deployment(
+    name: &str,
+    namespace: &str,
+    tunnel_config_secret_name: &str,
+    tunnel_id: &str,
+    replicas: i32,
+    cfdt: &CloudflaredTunnelSpec,
+    owner_ref: Option<Vec<OwnerReference>>,
+) -> Deployment {
+    Deployment {
+        metadata: ObjectMeta {
+            name: Some(name.to_string()),
+            namespace: Some(namespace.to_string()),
+            owner_references: owner_ref,
+            ..Default::default()
+        },
+        spec: Some(DeploymentSpec {
+            replicas: Some(replicas),
+            selector: LabelSelector {
+                match_labels: Some(BTreeMap::from([(
+                    "app".to_string(),
+                    "cloudflared".to_string(),
+                )])),
+                ..Default::default()
+            },
+            template: PodTemplateSpec {
+                metadata: Some(ObjectMeta {
+                    labels: Some(BTreeMap::from([(
+                        "app".to_string(),
+                        "cloudflared".to_string(),
+                    )])),
+                    ..Default::default()
+                }),
+                spec: Some(PodSpec {
+                    containers: vec![Container {
+                        command: cfdt.command.clone(),
+                        args: cfdt
+                            .args
+                            .clone()
+                            .or_else(|| Some(default_container_args(tunnel_id))),
+                        image: cfdt
+                            .image
+                            .clone()
+                            .or_else(|| Some(CFD_DEPLOYMENT_IMAGE.to_string())),
+                        name: name.to_string(),
+                        volume_mounts: Some(vec![VolumeMount {
+                            mount_path: "/etc/cloudflared".to_string(),
+                            name: "tunnel-config".to_string(),
+                            read_only: Some(true),
+                            ..Default::default()
+                        }]),
+                        ..Default::default()
+                    }],
+                    volumes: Some(vec![Volume {
+                        name: "tunnel-config".to_string(),
+                        secret: Some(SecretVolumeSource {
+                            default_mode: Some(0o644),
+                            optional: Some(false),
+                            secret_name: Some(tunnel_config_secret_name.to_string()),
+                            ..Default::default()
+                        }),
+                        ..Default::default()
+                    }]),
+                    ..Default::default()
+                }),
+            },
+            ..Default::default()
+        }),
+        ..Default::default()
+    }
+}
 
 pub(super) async fn patch_cloudflaredtunnel_status<F: FnOnce(&mut CloudflaredTunnelStatus)>(
     client: &Client,
@@ -29,11 +146,7 @@ pub(super) async fn patch_cloudflaredtunnel_status<F: FnOnce(&mut CloudflaredTun
 ) -> Result<CloudflaredTunnel> {
     let api = Api::<CloudflaredTunnel>::namespaced(client.clone(), namespace);
     let current_status = api.get_status(name).await?;
-    let mut new_status = current_status
-        .status
-        .as_ref()
-        .cloned()
-        .unwrap_or(CloudflaredTunnelStatus::default());
+    let mut new_status = current_status.status.as_ref().cloned().unwrap_or_default();
     update_fn(&mut new_status);
     if current_status
         .status
@@ -65,12 +178,7 @@ pub(super) async fn patch_opaque_secret_string(
     data: BTreeMap<String, String>,
     owner_ref: Option<Vec<OwnerReference>>,
 ) -> Result<bool> {
-    let binary_data = data
-        .into_iter()
-        .map(|(k, v)| (k, ByteString(v.as_bytes().to_vec())))
-        .collect();
-
-    patch_opaque_secret(client, name, namespace, binary_data, owner_ref).await
+    patch_opaque_secret(client, name, namespace, secret_string_data(data), owner_ref).await
 }
 
 pub(super) async fn patch_opaque_secret(
@@ -81,16 +189,7 @@ pub(super) async fn patch_opaque_secret(
     owner_ref: Option<Vec<OwnerReference>>,
 ) -> Result<bool> {
     let api = Api::<Secret>::namespaced(client.clone(), namespace);
-    let secret = Secret {
-        metadata: ObjectMeta {
-            name: Some(name.to_string()),
-            owner_references: owner_ref,
-            ..Default::default()
-        },
-        data: Some(data),
-        type_: Some("Opaque".to_string()),
-        ..Default::default()
-    };
+    let secret = opaque_secret(name, data, owner_ref);
 
     let before = api.get_opt(name).await?;
 
@@ -102,7 +201,7 @@ pub(super) async fn patch_opaque_secret(
         )
         .await?;
 
-    Ok(before.is_none_or(|b| b.metadata.resource_version != patched.metadata.resource_version))
+    Ok(secret_changed(before.as_ref(), &patched))
 }
 
 pub(super) async fn restart_deployment(
@@ -132,75 +231,15 @@ pub(super) async fn patch_deployment(
     owner_ref: Option<Vec<OwnerReference>>,
 ) -> Result<bool> {
     let api = Api::<Deployment>::namespaced(client.clone(), namespace);
-
-    let deployment = Deployment {
-        metadata: ObjectMeta {
-            name: Some(name.to_string()),
-            namespace: Some(namespace.to_string()),
-            owner_references: owner_ref,
-            ..Default::default()
-        },
-        spec: Some(DeploymentSpec {
-            replicas: Some(replicas),
-            selector: LabelSelector {
-                match_labels: Some(BTreeMap::from([(
-                    "app".to_string(),
-                    "cloudflared".to_string(),
-                )])),
-                ..Default::default()
-            },
-            template: PodTemplateSpec {
-                metadata: Some(ObjectMeta {
-                    labels: Some(BTreeMap::from([(
-                        "app".to_string(),
-                        "cloudflared".to_string(),
-                    )])),
-                    ..Default::default()
-                }),
-                spec: Some(PodSpec {
-                    containers: vec![Container {
-                        command: cfdt.command.as_ref().cloned(),
-                        args: cfdt.args.as_ref().cloned().or_else(|| {
-                            Some(vec![
-                                "tunnel".to_string(),
-                                "--no-autoupdate".to_string(),
-                                "--config".to_string(),
-                                "/etc/cloudflared/config.yml".to_string(),
-                                "run".to_string(),
-                                tunnel_id.to_string(),
-                            ])
-                        }),
-                        image: cfdt
-                            .image
-                            .as_ref()
-                            .cloned()
-                            .or(Some(CFD_DEPLOYMENT_IMAGE.to_string())),
-                        name: name.to_string(),
-                        volume_mounts: Some(vec![VolumeMount {
-                            mount_path: "/etc/cloudflared".to_string(),
-                            name: "tunnel-config".to_string(),
-                            read_only: Some(true),
-                            ..Default::default()
-                        }]),
-                        ..Default::default()
-                    }],
-                    volumes: Some(vec![Volume {
-                        name: "tunnel-config".to_string(),
-                        secret: Some(SecretVolumeSource {
-                            default_mode: Some(0o644),
-                            optional: Some(false),
-                            secret_name: Some(tunnel_config_secret_name.to_string()),
-                            ..Default::default()
-                        }),
-                        ..Default::default()
-                    }]),
-                    ..Default::default()
-                }),
-            },
-            ..Default::default()
-        }),
-        ..Default::default()
-    };
+    let deployment = cloudflared_deployment(
+        name,
+        namespace,
+        tunnel_config_secret_name,
+        tunnel_id,
+        replicas,
+        cfdt,
+        owner_ref,
+    );
 
     let before = api.get_metadata_opt(name).await?;
     let patched = api
@@ -211,5 +250,203 @@ pub(super) async fn patch_deployment(
         )
         .await?;
 
-    Ok(before.is_none_or(|b| b.metadata.generation != patched.metadata.generation))
+    Ok(deployment_changed(before.as_ref(), &patched))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn owner_reference() -> OwnerReference {
+        OwnerReference {
+            api_version: "chalharu.top/v1alpha1".to_string(),
+            kind: "CloudflaredTunnel".to_string(),
+            name: "demo".to_string(),
+            uid: "uid-1".to_string(),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn secret_string_data_converts_values_to_bytes() {
+        let data = secret_string_data(BTreeMap::from([
+            ("config.yml".to_string(), "value".to_string()),
+            ("cred.json".to_string(), "{}".to_string()),
+        ]));
+
+        assert_eq!(data["config.yml"].0, b"value");
+        assert_eq!(data["cred.json"].0, b"{}");
+    }
+
+    #[test]
+    fn opaque_secret_builder_sets_expected_metadata() {
+        let secret = opaque_secret(
+            "config-secret",
+            BTreeMap::from([("config.yml".to_string(), ByteString(b"value".to_vec()))]),
+            Some(vec![owner_reference()]),
+        );
+
+        assert_eq!(secret.metadata.name.as_deref(), Some("config-secret"));
+        assert_eq!(secret.type_.as_deref(), Some("Opaque"));
+        assert_eq!(
+            secret
+                .metadata
+                .owner_references
+                .as_ref()
+                .expect("owner reference should exist")
+                .len(),
+            1
+        );
+        assert_eq!(
+            secret.data.as_ref().expect("secret data should exist")["config.yml"].0,
+            b"value"
+        );
+    }
+
+    #[test]
+    fn default_container_args_include_the_tunnel_id() {
+        assert_eq!(
+            default_container_args("tunnel-id"),
+            vec![
+                "tunnel",
+                "--no-autoupdate",
+                "--config",
+                "/etc/cloudflared/config.yml",
+                "run",
+                "tunnel-id",
+            ]
+            .into_iter()
+            .map(str::to_string)
+            .collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn cloudflared_deployment_builder_uses_defaults_when_spec_omits_overrides() {
+        let deployment = cloudflared_deployment(
+            "demo-cloudflared",
+            "default",
+            "config-secret",
+            "tunnel-id",
+            2,
+            &CloudflaredTunnelSpec::default(),
+            Some(vec![owner_reference()]),
+        );
+
+        let spec = deployment.spec.expect("deployment spec should exist");
+        let pod_spec = spec.template.spec.expect("pod spec should exist");
+        let container = &pod_spec.containers[0];
+        let volume = &pod_spec.volumes.expect("volumes should exist")[0];
+
+        assert_eq!(
+            deployment.metadata.name.as_deref(),
+            Some("demo-cloudflared")
+        );
+        assert_eq!(deployment.metadata.namespace.as_deref(), Some("default"));
+        assert_eq!(spec.replicas, Some(2));
+        assert_eq!(container.image.as_deref(), Some(CFD_DEPLOYMENT_IMAGE));
+        assert_eq!(
+            container.args.as_deref(),
+            Some(default_container_args("tunnel-id").as_slice())
+        );
+        assert_eq!(volume.name, "tunnel-config");
+        assert_eq!(
+            volume
+                .secret
+                .as_ref()
+                .and_then(|secret| secret.secret_name.as_deref()),
+            Some("config-secret")
+        );
+    }
+
+    #[test]
+    fn cloudflared_deployment_builder_respects_spec_overrides() {
+        let deployment = cloudflared_deployment(
+            "demo-cloudflared",
+            "default",
+            "config-secret",
+            "tunnel-id",
+            1,
+            &CloudflaredTunnelSpec {
+                image: Some("cloudflare/cloudflared:custom".to_string()),
+                command: Some(vec!["cloudflared".to_string()]),
+                args: Some(vec!["tunnel".to_string(), "ingress".to_string()]),
+                ..Default::default()
+            },
+            None,
+        );
+
+        let container = &deployment
+            .spec
+            .expect("deployment spec should exist")
+            .template
+            .spec
+            .expect("pod spec should exist")
+            .containers[0];
+
+        assert_eq!(
+            container.image.as_deref(),
+            Some("cloudflare/cloudflared:custom")
+        );
+        assert_eq!(
+            container.command.as_deref(),
+            Some(&["cloudflared".to_string()][..])
+        );
+        assert_eq!(
+            container.args.as_deref(),
+            Some(&["tunnel".to_string(), "ingress".to_string()][..])
+        );
+    }
+
+    #[test]
+    fn change_detection_helpers_compare_resource_versions_and_generations() {
+        let before_secret = Secret {
+            metadata: ObjectMeta {
+                resource_version: Some("1".to_string()),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        let after_secret = Secret {
+            metadata: ObjectMeta {
+                resource_version: Some("2".to_string()),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        let before_deployment = PartialObjectMeta::<Deployment> {
+            metadata: ObjectMeta {
+                generation: Some(1),
+                ..Default::default()
+            },
+            _phantom: Default::default(),
+            types: None,
+        };
+        let after_deployment = Deployment {
+            metadata: ObjectMeta {
+                generation: Some(2),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+
+        assert!(secret_changed(None, &after_secret));
+        assert!(!secret_changed(Some(&before_secret), &before_secret));
+        assert!(secret_changed(Some(&before_secret), &after_secret));
+        assert!(deployment_changed(None, &after_deployment));
+        assert!(!deployment_changed(
+            Some(&before_deployment),
+            &Deployment {
+                metadata: ObjectMeta {
+                    generation: Some(1),
+                    ..Default::default()
+                },
+                ..Default::default()
+            }
+        ));
+        assert!(deployment_changed(
+            Some(&before_deployment),
+            &after_deployment
+        ));
+    }
 }
