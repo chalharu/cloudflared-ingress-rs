@@ -23,6 +23,8 @@ permissions:
 
 env:
   CARGO_TERM_COLOR: always
+  SCCACHE_GHA_ENABLED: "true"
+  RUSTC_WRAPPER: sccache
 
 jobs:
   validate:
@@ -34,6 +36,8 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v5
+      - name: Set up sccache
+        uses: mozilla-actions/sccache-action@7d986dd989559c6ecdb630a3fd2557667be217ad # v0.0.9
       - name: Set up Rust
         uses: actions-rust-lang/setup-rust-toolchain@v1
         with:
@@ -47,3 +51,6 @@ jobs:
       - name: Run clippy
         if: matrix.toolchain == '1.94.0'
         run: cargo clippy --workspace --all-targets -- -D warnings
+      - name: Show sccache stats
+        if: always()
+        run: sccache --show-stats || true
