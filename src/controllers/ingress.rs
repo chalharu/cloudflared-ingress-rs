@@ -1,5 +1,7 @@
+//! Ingress controller that translates `Ingress` resources into `CloudflaredTunnel` CRDs.
+
 use std::{
-    collections::{HashMap, HashSet},
+    collections::HashMap,
     fmt::Debug,
     sync::{Arc, Mutex, MutexGuard},
     time::Duration,
@@ -8,28 +10,28 @@ use std::{
 use futures::StreamExt as _;
 use k8s_openapi::api::{
     core::v1::Service,
-    networking::v1::{HTTPIngressPath, HTTPIngressRuleValue, Ingress, IngressClass},
+    networking::v1::{HTTPIngressPath, HTTPIngressRuleValue, Ingress, IngressClass, IngressSpec},
 };
 use kube::{
+    Api, Client, Resource, ResourceExt as _,
     api::{ListParams, ObjectMeta, PartialObjectMeta, PartialObjectMetaExt, Patch, PatchParams},
     runtime::{
+        Controller, WatchStreamExt as _,
         controller::Action,
         metadata_watcher,
         reflector::{self, ObjectRef},
-        watcher::{watcher, Config},
-        Controller, WatchStreamExt as _,
+        watcher::{Config, watcher},
     },
-    Api, Client, Resource, ResourceExt as _,
 };
 use serde::de::DeserializeOwned;
 use tracing::{info, warn};
 
 use crate::{
+    Error, Result,
     cli::ControllerArgs,
     controllers::cloudflared::{
         CloudflaredTunnelAccess, CloudflaredTunnelIngress, CloudflaredTunnelOriginRequest,
     },
-    Error, Result,
 };
 
 use super::cloudflared::{CloudflaredTunnel, CloudflaredTunnelSpec};
@@ -132,6 +134,31 @@ fn matches_requested_ingress_class(ic: &IngressClass, args: &ControllerArgs) -> 
         .unwrap_or(true)
 }
 
+fn is_default_ingress_class(ic: &IngressClass) -> bool {
+    ic.meta()
+        .annotations
+        .as_ref()
+        .and_then(|annotations| annotations.get("ingressclass.kubernetes.io/is-default-class"))
+        .is_some_and(|value| value.eq_ignore_ascii_case("true"))
+}
+
+fn build_target_ingress_class_map(ingress_classes: &[IngressClass]) -> TargetIngressClassMap {
+    let mut targets = HashMap::new();
+
+    for ingress_class in ingress_classes {
+        let obj_ref = reflector::Lookup::to_object_ref(
+            &ingress_class.metadata.clone().into_request_partial(),
+            (),
+        );
+        if is_default_ingress_class(ingress_class) {
+            targets.insert(None, obj_ref.clone());
+        }
+        targets.insert(Some(ingress_class.name_any()), obj_ref);
+    }
+
+    targets
+}
+
 fn build_service_port_map(services: Vec<Service>) -> ServicePortMap {
     services
         .into_iter()
@@ -180,6 +207,44 @@ fn build_service_url(scheme: &str, service_name: &str, port: Option<i32>) -> Str
     }
 }
 
+fn ingress_service_scheme(ingress: &Ingress) -> String {
+    ingress
+        .annotations()
+        .get("cloudflared-ingress.ingress.kubernetes.io/service.serversscheme")
+        .map(String::as_str)
+        .unwrap_or("http")
+        .to_lowercase()
+}
+
+fn split_annotation_csv(value: Option<&String>) -> Vec<String> {
+    value
+        .map(String::as_str)
+        .map(|value| {
+            value
+                .split(',')
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .map(str::to_string)
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default()
+}
+
+fn build_origin_request(
+    team_name: Option<&str>,
+    aud_tags: &[String],
+) -> CloudflaredTunnelOriginRequest {
+    CloudflaredTunnelOriginRequest {
+        access: team_name.map(|team_name| CloudflaredTunnelAccess {
+            required: true,
+            team_name: team_name.to_string(),
+            aud_tag: aud_tags.to_vec(),
+        }),
+        no_tls_verify: Some(true),
+        ..Default::default()
+    }
+}
+
 #[allow(clippy::result_large_err)]
 fn path_to_regex(path_type: &str, path: Option<&str>) -> Result<Option<String>> {
     match path_type {
@@ -189,6 +254,85 @@ fn path_to_regex(path_type: &str, path: Option<&str>) -> Result<Option<String>> 
             .map(|path| format!("^{}", regex_escape(path)))),
         _ => Err(Error::illegal_document()),
     }
+}
+
+#[allow(clippy::result_large_err)]
+fn ingress_rule_values(spec: &IngressSpec) -> Result<Vec<(Option<String>, HTTPIngressRuleValue)>> {
+    let default_backend = spec
+        .default_backend
+        .as_ref()
+        .map(|backend| HTTPIngressRuleValue {
+            paths: vec![HTTPIngressPath {
+                backend: backend.clone(),
+                path: None,
+                path_type: "ImplementationSpecific".to_string(),
+            }],
+        });
+    let rules = spec.rules.as_deref().unwrap_or_default();
+
+    if rules.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    let mut values = Vec::with_capacity(rules.len());
+    for rule in rules {
+        values.push((
+            rule.host.clone(),
+            rule.http
+                .clone()
+                .or_else(|| default_backend.clone())
+                .ok_or_else(Error::illegal_document)?,
+        ));
+    }
+
+    Ok(values)
+}
+
+#[allow(clippy::result_large_err)]
+fn build_tunnel_ingresses_for_ingress(
+    ingress: Ingress,
+    services: &ServicePortMap,
+) -> Result<Vec<CloudflaredTunnelIngress>> {
+    let scheme = ingress_service_scheme(&ingress);
+    let aud_tags = split_annotation_csv(
+        ingress
+            .annotations()
+            .get("cloudflared-ingress.ingress.kubernetes.io/service.aud"),
+    );
+    let team_name = ingress
+        .annotations()
+        .get("cloudflared-ingress.ingress.kubernetes.io/service.team")
+        .cloned();
+    let namespace = ingress.namespace().ok_or_else(Error::illegal_document)?;
+    let Some(spec) = ingress.spec else {
+        return Ok(Vec::new());
+    };
+    let origin_request = build_origin_request(team_name.as_deref(), &aud_tags);
+    let mut rendered_ingresses = Vec::new();
+
+    for (host, rule_value) in ingress_rule_values(&spec)? {
+        for path in rule_value.paths {
+            if path.backend.resource.is_some() {
+                return Err(Error::illegal_document());
+            }
+            let service = path.backend.service.ok_or_else(Error::illegal_document)?;
+            let service_name = format!("{}.{}.svc", service.name.as_str(), namespace);
+            let service_url = build_service_url(
+                &scheme,
+                &service_name,
+                resolve_service_port(&service, &namespace, services),
+            );
+
+            rendered_ingresses.push(CloudflaredTunnelIngress {
+                hostname: host.clone().ok_or_else(Error::illegal_document)?,
+                service: service_url,
+                path: path_to_regex(path.path_type.as_str(), path.path.as_deref())?,
+                origin_request: Some(origin_request.clone()),
+            });
+        }
+    }
+
+    Ok(rendered_ingresses)
 }
 
 // Context for our reconciler
@@ -257,44 +401,11 @@ impl Context {
     async fn reconcile(&self) -> Result<()> {
         let ingress_class = get_ingress_classes(&self.client, &self.args).await?;
 
-        let mut current_ic: HashSet<_> = lock_target_ingressclass(&self.target_ingressclass)
-            .keys()
-            .cloned()
-            .collect();
-
-        for ic in ingress_class.iter() {
-            let is_default_class = ic
-                .meta()
-                .annotations
-                .as_ref()
-                .and_then(|a| a.get("ingressclass.kubernetes.io/is-default-class"))
-                .is_some_and(|x| x.eq_ignore_ascii_case("true"));
-            let name = ic.name_any();
-
-            let obj_ref =
-                reflector::Lookup::to_object_ref(&ic.metadata.clone().into_request_partial(), ());
-            if is_default_class {
-                current_ic.remove(&None);
-                lock_target_ingressclass(&self.target_ingressclass).insert(None, obj_ref.clone());
-            }
-            current_ic.remove(&Some(name.clone()));
-            lock_target_ingressclass(&self.target_ingressclass)
-                .insert(Some(name.clone()), obj_ref.clone());
-        }
-
-        for ic in current_ic {
-            lock_target_ingressclass(&self.target_ingressclass).remove(&ic);
-        }
+        *lock_target_ingressclass(&self.target_ingressclass) =
+            build_target_ingress_class_map(&ingress_class);
 
         for ic in ingress_class {
-            let is_default_class = ic
-                .meta()
-                .annotations
-                .as_ref()
-                .and_then(|a| a.get("ingressclass.kubernetes.io/is-default-class"))
-                .is_some_and(|x| x.eq_ignore_ascii_case("true"));
-
-            self.reconcile_for_ingressclass(ic, is_default_class)
+            self.reconcile_for_ingressclass(ic.clone(), is_default_ingress_class(&ic))
                 .await?;
         }
         Ok(())
@@ -305,110 +416,18 @@ impl Context {
         ic: IngressClass,
         is_default_class: bool,
     ) -> Result<()> {
-        const SERVERSSCHEME_ANNOTATION: &str =
-            "cloudflared-ingress.ingress.kubernetes.io/service.serversscheme";
-        const ACCESS_AUD_ANNOTATION: &str = "cloudflared-ingress.ingress.kubernetes.io/service.aud";
-        const ACCESS_TEAM_ANNOTATION: &str =
-            "cloudflared-ingress.ingress.kubernetes.io/service.team";
-
         let ingresses = get_ingresses(&self.client, &ic.name_any(), is_default_class).await?;
         let name = ic.name_any();
         let owner_ref = ic.controller_owner_ref(&());
-
-        let mut cfdt_ingress = Vec::new();
 
         let cfdt_api = Api::<CloudflaredTunnel>::namespaced(
             self.client.clone(),
             self.args.cloudflare_tunnel_namespace(),
         );
         let services = build_service_port_map(get_services(&self.client).await?);
-
-        for i in ingresses.into_iter() {
-            let scheme = i
-                .annotations()
-                .get(SERVERSSCHEME_ANNOTATION)
-                .map(String::as_str)
-                .unwrap_or("http")
-                .to_lowercase();
-
-            let aud_tags = i
-                .annotations()
-                .get(ACCESS_AUD_ANNOTATION)
-                .map(String::as_str)
-                .map(|s| {
-                    s.split(',')
-                        .map(str::trim)
-                        .map(str::to_string)
-                        .collect::<Vec<_>>()
-                })
-                .unwrap_or_default();
-
-            let team_name = i.annotations().get(ACCESS_TEAM_ANNOTATION).cloned();
-
-            let ns = i.namespace().ok_or_else(Error::illegal_document)?;
-
-            let Some(spec) = i.spec else {
-                continue;
-            };
-
-            let default_backend =
-                spec.default_backend
-                    .as_ref()
-                    .map(|backend| HTTPIngressRuleValue {
-                        paths: vec![HTTPIngressPath {
-                            backend: backend.clone(),
-                            path: None,
-                            path_type: "ImplementationSpecific".to_string(),
-                        }],
-                    });
-
-            let origin_request = team_name
-                .map(|t| CloudflaredTunnelOriginRequest {
-                    access: Some(CloudflaredTunnelAccess {
-                        required: true,
-                        team_name: t.to_string(),
-                        aud_tag: aud_tags,
-                    }),
-                    no_tls_verify: Some(true),
-                    ..Default::default()
-                })
-                .or(Some(CloudflaredTunnelOriginRequest {
-                    no_tls_verify: Some(true),
-                    ..Default::default()
-                }));
-
-            for r in spec.rules.iter().flat_map(|r| r.iter()) {
-                for p in r
-                    .http
-                    .as_ref()
-                    .or(default_backend.as_ref())
-                    .ok_or_else(Error::illegal_document)?
-                    .paths
-                    .iter()
-                {
-                    if p.backend.resource.is_some() {
-                        return Err(Error::illegal_document());
-                    }
-                    let Some(ref service) = p.backend.service else {
-                        return Err(Error::illegal_document());
-                    };
-                    let svc_name = format!("{}.{}.svc", service.name.as_str(), ns);
-                    let cfdt_service = build_service_url(
-                        &scheme,
-                        &svc_name,
-                        resolve_service_port(service, &ns, &services),
-                    );
-                    let path = path_to_regex(p.path_type.as_str(), p.path.as_deref())?;
-
-                    cfdt_ingress.push(CloudflaredTunnelIngress {
-                        // Hostなしは最終的にCNAMEが振れないことからエラーとする
-                        hostname: r.host.clone().ok_or_else(Error::illegal_document)?,
-                        service: cfdt_service,
-                        path,
-                        origin_request: origin_request.clone(),
-                    });
-                }
-            }
+        let mut cfdt_ingress = Vec::new();
+        for ingress in ingresses {
+            cfdt_ingress.extend(build_tunnel_ingresses_for_ingress(ingress, &services)?);
         }
         let cfd = CloudflaredTunnel {
             metadata: ObjectMeta {
@@ -457,7 +476,8 @@ fn regex_escape(s: &str) -> String {
 mod tests {
     use super::*;
     use k8s_openapi::api::networking::v1::{
-        IngressClassSpec, IngressServiceBackend, ServiceBackendPort,
+        IngressBackend, IngressClassSpec, IngressRule, IngressServiceBackend, IngressSpec,
+        ServiceBackendPort,
     };
 
     fn controller_args(ingress_class: Option<&str>) -> ControllerArgs {
@@ -477,6 +497,57 @@ mod tests {
                 controller: Some(controller.to_string()),
                 parameters: None,
             }),
+        }
+    }
+
+    fn ingress_with_rules(
+        host: Option<&str>,
+        namespace: &str,
+        annotations: Vec<(&str, &str)>,
+        rules: Option<Vec<IngressRule>>,
+        default_backend: Option<IngressBackend>,
+    ) -> Ingress {
+        Ingress {
+            metadata: ObjectMeta {
+                name: Some("demo".to_string()),
+                namespace: Some(namespace.to_string()),
+                annotations: Some(
+                    annotations
+                        .into_iter()
+                        .map(|(key, value)| (key.to_string(), value.to_string()))
+                        .collect(),
+                ),
+                ..Default::default()
+            },
+            spec: Some(IngressSpec {
+                ingress_class_name: Some("public".to_string()),
+                rules: rules.or_else(|| {
+                    host.map(|host| {
+                        vec![IngressRule {
+                            host: Some(host.to_string()),
+                            http: Some(HTTPIngressRuleValue {
+                                paths: vec![HTTPIngressPath {
+                                    backend: IngressBackend {
+                                        service: Some(IngressServiceBackend {
+                                            name: "api".to_string(),
+                                            port: Some(ServiceBackendPort {
+                                                number: Some(80),
+                                                name: None,
+                                            }),
+                                        }),
+                                        resource: None,
+                                    },
+                                    path: Some("/".to_string()),
+                                    path_type: "Prefix".to_string(),
+                                }],
+                            }),
+                        }]
+                    })
+                }),
+                default_backend,
+                ..Default::default()
+            }),
+            ..Default::default()
         }
     }
 
@@ -550,5 +621,268 @@ mod tests {
         );
         assert_eq!(path_to_regex("Prefix", Some("/")).unwrap(), None);
         assert!(path_to_regex("Unknown", Some("/")).is_err());
+    }
+
+    #[test]
+    fn build_service_port_map_keeps_only_named_ports_for_namespaced_services() {
+        let services = vec![
+            Service {
+                metadata: ObjectMeta {
+                    name: Some("api".to_string()),
+                    namespace: Some("default".to_string()),
+                    ..Default::default()
+                },
+                spec: Some(k8s_openapi::api::core::v1::ServiceSpec {
+                    ports: Some(vec![
+                        k8s_openapi::api::core::v1::ServicePort {
+                            name: Some("http".to_string()),
+                            port: 80,
+                            ..Default::default()
+                        },
+                        k8s_openapi::api::core::v1::ServicePort {
+                            name: None,
+                            port: 443,
+                            ..Default::default()
+                        },
+                    ]),
+                    ..Default::default()
+                }),
+                ..Default::default()
+            },
+            Service {
+                metadata: ObjectMeta {
+                    name: Some("missing-ns".to_string()),
+                    ..Default::default()
+                },
+                ..Default::default()
+            },
+        ];
+
+        let map = build_service_port_map(services);
+
+        assert_eq!(map.len(), 1);
+        assert_eq!(map["api.default.svc"]["http"], 80);
+        assert!(!map["api.default.svc"].contains_key("443"));
+    }
+
+    #[test]
+    fn build_target_ingress_class_map_tracks_default_and_named_classes() {
+        let public = ingress_class("public", "controller");
+        let mut private = ingress_class("private", "controller");
+        private.metadata.annotations = Some(std::collections::BTreeMap::from([(
+            "ingressclass.kubernetes.io/is-default-class".to_string(),
+            "TRUE".to_string(),
+        )]));
+
+        let map = build_target_ingress_class_map(&[public, private]);
+
+        assert!(map.contains_key(&Some("public".to_string())));
+        assert!(map.contains_key(&Some("private".to_string())));
+        assert!(map.contains_key(&None));
+    }
+
+    #[test]
+    fn split_annotation_csv_trims_and_discards_empty_values() {
+        let values = split_annotation_csv(Some(&"  aud-a, ,aud-b  ".to_string()));
+
+        assert_eq!(values, vec!["aud-a".to_string(), "aud-b".to_string()]);
+    }
+
+    #[test]
+    fn build_origin_request_enables_access_when_team_is_present() {
+        let aud_tags = vec!["aud-a".to_string(), "aud-b".to_string()];
+
+        let origin_request = build_origin_request(Some("team"), &aud_tags);
+        let default_request = build_origin_request(None, &aud_tags);
+
+        assert_eq!(origin_request.no_tls_verify, Some(true));
+        assert_eq!(
+            origin_request
+                .access
+                .as_ref()
+                .expect("access should exist")
+                .team_name,
+            "team"
+        );
+        assert_eq!(default_request.no_tls_verify, Some(true));
+        assert_eq!(default_request.access, None);
+    }
+
+    #[test]
+    fn ingress_rule_values_without_explicit_rules_returns_no_entries() {
+        let values = ingress_rule_values(&IngressSpec {
+            default_backend: Some(IngressBackend {
+                service: Some(IngressServiceBackend {
+                    name: "api".to_string(),
+                    port: Some(ServiceBackendPort {
+                        name: Some("https".to_string()),
+                        number: None,
+                    }),
+                }),
+                resource: None,
+            }),
+            ..Default::default()
+        })
+        .expect("missing rules should be ignored");
+
+        assert!(values.is_empty());
+    }
+
+    #[test]
+    fn build_tunnel_ingresses_for_ingress_skips_default_backend_without_host_rules() {
+        let services = HashMap::from([(
+            "api.default.svc".to_string(),
+            HashMap::from([("https".to_string(), 8443)]),
+        )]);
+        let ingress = Ingress {
+            metadata: ObjectMeta {
+                name: Some("default-backend-only".to_string()),
+                namespace: Some("default".to_string()),
+                ..Default::default()
+            },
+            spec: Some(IngressSpec {
+                default_backend: Some(IngressBackend {
+                    service: Some(IngressServiceBackend {
+                        name: "api".to_string(),
+                        port: Some(ServiceBackendPort {
+                            name: Some("https".to_string()),
+                            number: None,
+                        }),
+                    }),
+                    resource: None,
+                }),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+
+        let rendered = build_tunnel_ingresses_for_ingress(ingress, &services)
+            .expect("default-backend-only ingress should be skipped");
+
+        assert!(rendered.is_empty());
+    }
+
+    #[test]
+    fn build_tunnel_ingresses_for_ingress_builds_expected_entries() {
+        let services = HashMap::from([(
+            "api.default.svc".to_string(),
+            HashMap::from([("https".to_string(), 8443)]),
+        )]);
+        let ingress = ingress_with_rules(
+            Some("example.com"),
+            "default",
+            vec![
+                (
+                    "cloudflared-ingress.ingress.kubernetes.io/service.serversscheme",
+                    "HTTPS",
+                ),
+                (
+                    "cloudflared-ingress.ingress.kubernetes.io/service.aud",
+                    "aud-a, aud-b",
+                ),
+                (
+                    "cloudflared-ingress.ingress.kubernetes.io/service.team",
+                    "team",
+                ),
+            ],
+            Some(vec![IngressRule {
+                host: Some("example.com".to_string()),
+                http: Some(HTTPIngressRuleValue {
+                    paths: vec![HTTPIngressPath {
+                        backend: IngressBackend {
+                            service: Some(IngressServiceBackend {
+                                name: "api".to_string(),
+                                port: Some(ServiceBackendPort {
+                                    name: Some("https".to_string()),
+                                    number: None,
+                                }),
+                            }),
+                            resource: None,
+                        },
+                        path: Some("/api".to_string()),
+                        path_type: "Prefix".to_string(),
+                    }],
+                }),
+            }]),
+            None,
+        );
+
+        let rendered = build_tunnel_ingresses_for_ingress(ingress, &services)
+            .expect("ingress should render successfully");
+
+        assert_eq!(rendered.len(), 1);
+        assert_eq!(rendered[0].hostname, "example.com");
+        assert_eq!(rendered[0].service, "https://api.default.svc:8443");
+        assert_eq!(rendered[0].path.as_deref(), Some("^/api"));
+        assert_eq!(
+            rendered[0]
+                .origin_request
+                .as_ref()
+                .and_then(|origin_request| origin_request.access.as_ref())
+                .expect("access should exist")
+                .aud_tag,
+            vec!["aud-a".to_string(), "aud-b".to_string()]
+        );
+    }
+
+    #[test]
+    fn build_tunnel_ingresses_for_ingress_requires_a_host() {
+        let services = HashMap::new();
+        let ingress = ingress_with_rules(
+            None,
+            "default",
+            Vec::new(),
+            Some(vec![IngressRule {
+                host: None,
+                http: Some(HTTPIngressRuleValue {
+                    paths: vec![HTTPIngressPath {
+                        backend: IngressBackend {
+                            service: Some(IngressServiceBackend {
+                                name: "api".to_string(),
+                                port: Some(ServiceBackendPort {
+                                    number: Some(80),
+                                    name: None,
+                                }),
+                            }),
+                            resource: None,
+                        },
+                        path: Some("/".to_string()),
+                        path_type: "Prefix".to_string(),
+                    }],
+                }),
+            }]),
+            None,
+        );
+
+        let result = build_tunnel_ingresses_for_ingress(ingress, &services);
+
+        assert!(matches!(result, Err(Error::IllegalDocument { .. })));
+    }
+
+    #[test]
+    fn build_tunnel_ingresses_for_ingress_rejects_resource_backends() {
+        let ingress = ingress_with_rules(
+            Some("example.com"),
+            "default",
+            Vec::new(),
+            Some(vec![IngressRule {
+                host: Some("example.com".to_string()),
+                http: Some(HTTPIngressRuleValue {
+                    paths: vec![HTTPIngressPath {
+                        backend: IngressBackend {
+                            service: None,
+                            resource: Some(Default::default()),
+                        },
+                        path: Some("/".to_string()),
+                        path_type: "ImplementationSpecific".to_string(),
+                    }],
+                }),
+            }]),
+            None,
+        );
+
+        let result = build_tunnel_ingresses_for_ingress(ingress, &HashMap::new());
+
+        assert!(matches!(result, Err(Error::IllegalDocument { .. })));
     }
 }

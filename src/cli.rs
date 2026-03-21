@@ -1,20 +1,25 @@
+//! Command-line parsing for the controller binary.
+
 use clap::{Args, Parser, Subcommand};
 
-#[derive(Parser, Debug, Clone)]
+/// Top-level CLI for the `cloudflared-ingress-rs` binary.
+#[derive(Parser, Debug, Clone, PartialEq, Eq)]
 pub struct Cli {
     #[command(subcommand)]
     commands: Commands,
 }
 
-#[derive(Debug, Subcommand, Clone)]
+/// Supported subcommands for the binary.
+#[derive(Debug, Subcommand, Clone, PartialEq, Eq)]
 pub enum Commands {
-    #[command(about = "Create crd yaml")]
+    #[command(about = "Print the CloudflaredTunnel CRD as YAML")]
     CreateYaml,
-    #[command()]
+    #[command(about = "Run the ingress and cloudflared controllers")]
     Run(ControllerArgs),
 }
 
-#[derive(Debug, Clone, Args)]
+/// Controller runtime configuration.
+#[derive(Debug, Clone, Args, PartialEq, Eq)]
 pub struct ControllerArgs {
     #[arg(long, env)]
     ingress_class: Option<String>,
@@ -85,5 +90,102 @@ impl ControllerArgs {
 impl Cli {
     pub fn commands(&self) -> &Commands {
         &self.commands
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn parse(arguments: &[&str]) -> Cli {
+        Cli::try_parse_from(arguments).expect("command should parse")
+    }
+
+    #[test]
+    fn create_yaml_command_parses() {
+        let cli = parse(&["cloudflared-ingress-rs", "create-yaml"]);
+
+        assert_eq!(cli.commands(), &Commands::CreateYaml);
+    }
+
+    #[test]
+    fn run_command_uses_defaults_for_optional_arguments() {
+        let cli = parse(&[
+            "cloudflared-ingress-rs",
+            "run",
+            "--cloudflare-token",
+            "token",
+            "--cloudflare-account-id",
+            "account",
+        ]);
+
+        assert_eq!(
+            cli,
+            Cli {
+                commands: Commands::Run(ControllerArgs {
+                    ingress_class: None,
+                    ingress_controller: "chalharu.top/cloudflared-ingress-controller".to_string(),
+                    cloudflare_token: "token".to_string(),
+                    cloudflare_account_id: "account".to_string(),
+                    cloudflare_tunnel_prefix: "k8s-ingress-".to_string(),
+                    cloudflare_tunnel_namespace: "cloudflared".to_string(),
+                    deployment_replicas: 1,
+                }),
+            }
+        );
+    }
+
+    #[test]
+    fn run_command_parses_explicit_overrides() {
+        let cli = parse(&[
+            "cloudflared-ingress-rs",
+            "run",
+            "--ingress-class",
+            "public",
+            "--ingress-controller",
+            "example.com/controller",
+            "--cloudflare-token",
+            "token",
+            "--cloudflare-account-id",
+            "account",
+            "--cloudflare-tunnel-prefix",
+            "prod-",
+            "--cloudflare-tunnel-namespace",
+            "edge",
+            "--deployment-replicas",
+            "3",
+        ]);
+
+        assert_eq!(
+            cli.commands(),
+            &Commands::Run(ControllerArgs {
+                ingress_class: Some("public".to_string()),
+                ingress_controller: "example.com/controller".to_string(),
+                cloudflare_token: "token".to_string(),
+                cloudflare_account_id: "account".to_string(),
+                cloudflare_tunnel_prefix: "prod-".to_string(),
+                cloudflare_tunnel_namespace: "edge".to_string(),
+                deployment_replicas: 3,
+            })
+        );
+    }
+
+    #[test]
+    fn accessors_return_expected_values() {
+        let args = ControllerArgs::new_for_test(
+            Some("public".to_string()),
+            "chalharu.top/cloudflared-ingress-controller",
+        );
+
+        assert_eq!(args.ingress_class().map(String::as_str), Some("public"));
+        assert_eq!(
+            args.ingress_controller(),
+            "chalharu.top/cloudflared-ingress-controller"
+        );
+        assert_eq!(args.cloudflare_token(), "token");
+        assert_eq!(args.cloudflare_account_id(), "account");
+        assert_eq!(args.cloudflare_tunnel_prefix(), "prefix-");
+        assert_eq!(args.cloudflare_tunnel_namespace(), "cloudflared");
+        assert_eq!(args.deployment_replicas(), 1);
     }
 }

@@ -1,8 +1,10 @@
+//! Binary entrypoint for the Cloudflare Tunnel ingress controller.
+
 mod cli;
 mod controllers;
 mod error;
 
-use actix_web::{get, middleware, App, HttpRequest, HttpResponse, HttpServer, Responder};
+use actix_web::{App, HttpRequest, HttpResponse, HttpServer, Responder, get, middleware};
 use clap::Parser as _;
 use cli::{Cli, Commands};
 use kube::CustomResourceExt as _;
