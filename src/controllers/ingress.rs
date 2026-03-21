@@ -509,10 +509,12 @@ fn regex_escape(s: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::controllers::test_support;
     use k8s_openapi::api::networking::v1::{
         IngressBackend, IngressClassSpec, IngressRule, IngressServiceBackend, IngressSpec,
         ServiceBackendPort,
     };
+    use kube::api::{DeleteParams, PostParams};
 
     fn controller_args(ingress_class: Option<&str>) -> ControllerArgs {
         ControllerArgs::new_for_test(
@@ -1173,6 +1175,185 @@ mod tests {
         );
 
         assert_eq!(action, Action::requeue(Duration::from_secs(5 * 60)));
+    }
+
+    #[tokio::test]
+    async fn kind_reconcile_creates_cloudflared_tunnel_from_cluster_resources() {
+        let Some(client) = test_support::kind_client().await else {
+            return;
+        };
+
+        test_support::ensure_cloudflared_crd(&client).await;
+        let app_namespace = test_support::unique_name("ingress-app");
+        let tunnel_namespace = test_support::unique_name("ingress-tunnel");
+        let ingress_class_name = test_support::unique_name("public");
+        test_support::ensure_namespace(&client, &app_namespace).await;
+        test_support::ensure_namespace(&client, &tunnel_namespace).await;
+
+        let args = ControllerArgs::new_for_test_with_namespace(
+            Some(ingress_class_name.clone()),
+            "chalharu.top/cloudflared-ingress-controller",
+            tunnel_namespace.clone(),
+        );
+
+        let ingress_class_api = Api::<IngressClass>::all(client.clone());
+        let created_ingress_class = ingress_class_api
+            .create(
+                &PostParams::default(),
+                &ingress_class(&ingress_class_name, args.ingress_controller()),
+            )
+            .await
+            .expect("ingress class should create");
+
+        let service_api = Api::<Service>::namespaced(client.clone(), &app_namespace);
+        service_api
+            .create(
+                &PostParams::default(),
+                &Service {
+                    metadata: ObjectMeta {
+                        name: Some("api".to_string()),
+                        namespace: Some(app_namespace.clone()),
+                        ..Default::default()
+                    },
+                    spec: Some(k8s_openapi::api::core::v1::ServiceSpec {
+                        ports: Some(vec![k8s_openapi::api::core::v1::ServicePort {
+                            name: Some("https".to_string()),
+                            port: 8443,
+                            ..Default::default()
+                        }]),
+                        ..Default::default()
+                    }),
+                    ..Default::default()
+                },
+            )
+            .await
+            .expect("service should create");
+
+        let ingress_api = Api::<Ingress>::namespaced(client.clone(), &app_namespace);
+        let mut ingress = ingress_with_rules(
+            Some("app.example.com"),
+            &app_namespace,
+            vec![
+                (
+                    "cloudflared-ingress.ingress.kubernetes.io/service.serversscheme",
+                    "HTTPS",
+                ),
+                (
+                    "cloudflared-ingress.ingress.kubernetes.io/service.aud",
+                    "aud-a, aud-b",
+                ),
+                (
+                    "cloudflared-ingress.ingress.kubernetes.io/service.team",
+                    "team",
+                ),
+            ],
+            Some(vec![IngressRule {
+                host: Some("app.example.com".to_string()),
+                http: Some(HTTPIngressRuleValue {
+                    paths: vec![HTTPIngressPath {
+                        backend: IngressBackend {
+                            service: Some(IngressServiceBackend {
+                                name: "api".to_string(),
+                                port: Some(ServiceBackendPort {
+                                    name: Some("https".to_string()),
+                                    number: None,
+                                }),
+                            }),
+                            resource: None,
+                        },
+                        path: Some("/api".to_string()),
+                        path_type: "Prefix".to_string(),
+                    }],
+                }),
+            }]),
+            None,
+        );
+        ingress
+            .spec
+            .as_mut()
+            .expect("spec should exist")
+            .ingress_class_name = Some(ingress_class_name.clone());
+        ingress_api
+            .create(&PostParams::default(), &ingress)
+            .await
+            .expect("ingress should create");
+
+        let context = Arc::new(Context {
+            client: client.clone(),
+            args,
+            target_ingressclass: Arc::new(Mutex::new(HashMap::new())),
+        });
+
+        context
+            .reconcile()
+            .await
+            .expect("reconcile should translate ingress resources");
+
+        let cfdt_api = Api::<CloudflaredTunnel>::namespaced(client.clone(), &tunnel_namespace);
+        let cfdt_name = ingress_class_name.clone();
+        let cloudflared_tunnel = test_support::wait_for(
+            "CloudflaredTunnel creation from ingress reconciliation",
+            Duration::from_secs(10),
+            || {
+                let cfdt_api = cfdt_api.clone();
+                let cfdt_name = cfdt_name.clone();
+                async move {
+                    cfdt_api
+                        .get_opt(&cfdt_name)
+                        .await
+                        .expect("CloudflaredTunnel lookup should succeed")
+                }
+            },
+        )
+        .await;
+
+        assert!(
+            lock_target_ingressclass(&context.target_ingressclass)
+                .contains_key(&Some(ingress_class_name.clone()))
+        );
+        assert_eq!(
+            cloudflared_tunnel.metadata.name.as_deref(),
+            Some(cfdt_name.as_str())
+        );
+        assert_eq!(
+            cloudflared_tunnel
+                .metadata
+                .owner_references
+                .as_ref()
+                .map(|refs| {
+                    refs.iter()
+                        .map(|owner_ref| owner_ref.name.clone())
+                        .collect::<Vec<_>>()
+                }),
+            Some(vec![created_ingress_class.name_any()])
+        );
+        let rendered_ingress = cloudflared_tunnel
+            .spec
+            .ingress
+            .as_ref()
+            .expect("ingress rules should exist");
+        assert_eq!(rendered_ingress.len(), 1);
+        assert_eq!(rendered_ingress[0].hostname, "app.example.com");
+        assert_eq!(
+            rendered_ingress[0].service,
+            format!("https://api.{app_namespace}.svc:8443")
+        );
+        assert_eq!(rendered_ingress[0].path.as_deref(), Some("^/api(?:/|$)"));
+        assert_eq!(
+            rendered_ingress[0]
+                .origin_request
+                .as_ref()
+                .and_then(|origin_request| origin_request.access.as_ref())
+                .map(|access| access.aud_tag.clone()),
+            Some(vec!["aud-a".to_string(), "aud-b".to_string()])
+        );
+
+        ingress_class_api
+            .delete(&ingress_class_name, &DeleteParams::background())
+            .await
+            .expect("ingress class should delete");
+        test_support::cleanup_namespace(&client, &app_namespace).await;
+        test_support::cleanup_namespace(&client, &tunnel_namespace).await;
     }
 
     fn test_client() -> Client {

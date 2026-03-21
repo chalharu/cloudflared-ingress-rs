@@ -75,13 +75,22 @@ impl ControllerArgs {
         ingress_class: Option<String>,
         ingress_controller: impl Into<String>,
     ) -> Self {
+        Self::new_for_test_with_namespace(ingress_class, ingress_controller, "cloudflared")
+    }
+
+    #[cfg(test)]
+    pub(crate) fn new_for_test_with_namespace(
+        ingress_class: Option<String>,
+        ingress_controller: impl Into<String>,
+        cloudflare_tunnel_namespace: impl Into<String>,
+    ) -> Self {
         Self {
             ingress_class,
             ingress_controller: ingress_controller.into(),
             cloudflare_token: "token".to_string(),
             cloudflare_account_id: "account".to_string(),
             cloudflare_tunnel_prefix: "prefix-".to_string(),
-            cloudflare_tunnel_namespace: "cloudflared".to_string(),
+            cloudflare_tunnel_namespace: cloudflare_tunnel_namespace.into(),
             deployment_replicas: 1,
         }
     }

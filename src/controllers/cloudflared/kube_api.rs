@@ -303,6 +303,8 @@ pub(super) async fn patch_deployment(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::controllers::test_support;
+    use kube::api::PostParams;
 
     fn owner_reference() -> OwnerReference {
         OwnerReference {
@@ -550,5 +552,162 @@ mod tests {
             &before_deployment,
             &after_deployment
         ));
+    }
+
+    #[tokio::test]
+    async fn kind_patch_helpers_manage_live_kubernetes_resources() {
+        let Some(client) = test_support::kind_client().await else {
+            return;
+        };
+
+        test_support::ensure_cloudflared_crd(&client).await;
+        let namespace = test_support::unique_name("kube-api");
+        test_support::ensure_namespace(&client, &namespace).await;
+
+        let cfdt_api = Api::<CloudflaredTunnel>::namespaced(client.clone(), &namespace);
+        cfdt_api
+            .create(
+                &PostParams::default(),
+                &CloudflaredTunnel {
+                    metadata: ObjectMeta {
+                        name: Some("demo".to_string()),
+                        namespace: Some(namespace.clone()),
+                        ..Default::default()
+                    },
+                    spec: CloudflaredTunnelSpec {
+                        default_ingress_service: "http_status:404".to_string(),
+                        ..Default::default()
+                    },
+                    status: None,
+                },
+            )
+            .await
+            .expect("CloudflaredTunnel should create");
+
+        let resources = get_cloudflaredtunnel(&client)
+            .await
+            .expect("resource list should succeed");
+        assert!(resources.iter().any(|resource| {
+            resource.metadata.namespace.as_deref() == Some(namespace.as_str())
+                && resource.metadata.name.as_deref() == Some("demo")
+        }));
+
+        let updated_status =
+            patch_cloudflaredtunnel_status(&client, &namespace, "demo", |status| {
+                status.tunnel_id = Some("tunnel-id".to_string());
+                status.config_secret_ref = Some("config-secret".to_string());
+            })
+            .await
+            .expect("status patch should succeed");
+        assert_eq!(
+            updated_status
+                .status
+                .as_ref()
+                .and_then(|status| status.tunnel_id.as_deref()),
+            Some("tunnel-id")
+        );
+        let unchanged_status =
+            patch_cloudflaredtunnel_status(&client, &namespace, "demo", |status| {
+                status.tunnel_id = Some("tunnel-id".to_string());
+                status.config_secret_ref = Some("config-secret".to_string());
+            })
+            .await
+            .expect("no-op status patch should succeed");
+        assert_eq!(
+            unchanged_status
+                .status
+                .as_ref()
+                .and_then(|status| status.config_secret_ref.as_deref()),
+            Some("config-secret")
+        );
+
+        assert!(
+            patch_opaque_secret_string(
+                &client,
+                "config-secret",
+                &namespace,
+                BTreeMap::from([("config.yml".to_string(), "value".to_string())]),
+                Some(vec![owner_reference()]),
+            )
+            .await
+            .expect("secret creation should succeed")
+        );
+        assert!(
+            !patch_opaque_secret_string(
+                &client,
+                "config-secret",
+                &namespace,
+                BTreeMap::from([("config.yml".to_string(), "value".to_string())]),
+                Some(vec![owner_reference()]),
+            )
+            .await
+            .expect("unchanged secret patch should succeed")
+        );
+
+        let created = patch_deployment(
+            &client,
+            "demo-cloudflared",
+            &namespace,
+            "config-secret",
+            "tunnel-id",
+            1,
+            &CloudflaredTunnelSpec::default(),
+            Some(vec![owner_reference()]),
+        )
+        .await
+        .expect("deployment creation should succeed");
+        assert!(created);
+        let unchanged = patch_deployment(
+            &client,
+            "demo-cloudflared",
+            &namespace,
+            "config-secret",
+            "tunnel-id",
+            1,
+            &CloudflaredTunnelSpec::default(),
+            Some(vec![owner_reference()]),
+        )
+        .await
+        .expect("unchanged deployment patch should succeed");
+        assert!(!unchanged);
+
+        let migrated = patch_deployment(
+            &client,
+            "demo-cloudflared",
+            &namespace,
+            "config-secret",
+            "tunnel-id",
+            1,
+            &CloudflaredTunnelSpec::default(),
+            Some(vec![OwnerReference {
+                uid: "uid-2".to_string(),
+                ..owner_reference()
+            }]),
+        )
+        .await
+        .expect("selector migration patch should succeed");
+        assert!(migrated);
+
+        let deployment_api = Api::<Deployment>::namespaced(client.clone(), &namespace);
+        let deployment = deployment_api
+            .get("demo-cloudflared")
+            .await
+            .expect("deployment should exist after migration");
+        assert_eq!(
+            deployment
+                .spec
+                .as_ref()
+                .and_then(|spec| spec.selector.match_labels.as_ref())
+                .and_then(|labels| labels.get(SELECTOR_ID_LABEL))
+                .map(String::as_str),
+            Some("uid-2")
+        );
+
+        let restarted = restart_deployment(&client, "demo-cloudflared", &namespace)
+            .await
+            .expect("restart should succeed");
+        assert_eq!(restarted.metadata.name.as_deref(), Some("demo-cloudflared"));
+
+        test_support::cleanup_namespace(&client, &namespace).await;
     }
 }
