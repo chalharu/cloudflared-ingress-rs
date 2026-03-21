@@ -20,7 +20,7 @@ This document is the source of truth for contribution rules.
 - Rust changes: `cargo test`
 - Rust formatting/lint-sensitive changes: `cargo fmt --all --check && cargo clippy --workspace --all-targets -- -D warnings`
 - `.github/hooks/**` changes: `node --test .github/hooks/postToolUse/main.test.mjs`
-- Hosted CI runs SonarQube Cloud analysis from `.github/workflows/sonarqube-cloud.yaml`; keep `sonar-project.properties` in sync with the repository layout.
+- Hosted CI runs SonarQube Cloud analysis from `.github/workflows/sonarqube-cloud.yaml`; keep `sonar-project.properties` in sync with the repository layout and with the Rust LCOV coverage path produced by `cargo llvm-cov`.
 
 ## 4. Commit Message Rules (Conventional Commits)
 
