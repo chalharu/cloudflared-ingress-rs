@@ -457,15 +457,10 @@ mod tests {
     };
 
     fn controller_args(ingress_class: Option<&str>) -> ControllerArgs {
-        ControllerArgs {
-            ingress_class: ingress_class.map(str::to_string),
-            ingress_controller: "chalharu.top/cloudflared-ingress-controller".to_string(),
-            cloudflare_token: "token".to_string(),
-            cloudflare_account_id: "account".to_string(),
-            cloudflare_tunnel_prefix: "prefix-".to_string(),
-            cloudflare_tunnel_namespace: "cloudflared".to_string(),
-            deployment_replicas: 1,
-        }
+        ControllerArgs::new_for_test(
+            ingress_class.map(str::to_string),
+            "chalharu.top/cloudflared-ingress-controller",
+        )
     }
 
     fn ingress_class(name: &str, controller: &str) -> IngressClass {
