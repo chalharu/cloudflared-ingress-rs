@@ -7,7 +7,7 @@
         "bash": "node .github/hooks/postToolUse/main.mjs",
         "powershell": "node .github/hooks/postToolUse/main.mjs",
         "cwd": ".",
-        "timeoutSec": 90
+        "timeoutSec": 300
       }
     ]
   }

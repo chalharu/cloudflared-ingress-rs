@@ -6,6 +6,11 @@ on:
     paths:
       - '.github/hooks/**'
       - '.github/workflows/copilot-hooks.yaml'
+  push:
+    branches: [ "main" ]
+    paths:
+      - '.github/hooks/**'
+      - '.github/workflows/copilot-hooks.yaml'
 
 permissions:
   contents: read
@@ -17,7 +22,7 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v5
       - name: Set up Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v6
         with:
           node-version: '22'
       - name: Run hook regression tests

@@ -20,6 +20,7 @@ async fn index(_req: HttpRequest) -> impl Responder {
     HttpResponse::Ok()
 }
 
+#[allow(clippy::result_large_err)]
 #[tokio::main]
 async fn main() -> Result<()> {
     let args = Cli::parse();
@@ -40,15 +41,27 @@ async fn main() -> Result<()> {
         }
         Commands::Run(args) => {
             // Both runtimes implements graceful shutdown, so poll until both are done
-            tokio::join!(
+            let (ingress_result, cloudflared_result, server_result) = tokio::join!(
                 controllers::ingress::run_controllers(args.clone()),
                 controllers::cloudflared::run_controller(args.clone()),
                 run_server()
-            )
-            .1?;
+            );
+            combine_run_results(ingress_result, cloudflared_result, server_result)?;
         }
     }
 
+    Ok(())
+}
+
+#[allow(clippy::result_large_err)]
+fn combine_run_results(
+    ingress_result: Result<()>,
+    cloudflared_result: Result<()>,
+    server_result: std::io::Result<()>,
+) -> Result<()> {
+    ingress_result?;
+    cloudflared_result?;
+    server_result?;
     Ok(())
 }
 
@@ -65,4 +78,31 @@ async fn run_server() -> Result<(), std::io::Error> {
     .shutdown_timeout(5);
 
     server.run().await
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn combine_run_results_returns_the_first_controller_error() {
+        let result = combine_run_results(Err(Error::illegal_document()), Ok(()), Ok(()));
+
+        assert!(matches!(result, Err(Error::IllegalDocument { .. })));
+    }
+
+    #[test]
+    fn combine_run_results_returns_the_second_controller_error() {
+        let result = combine_run_results(Ok(()), Err(Error::illegal_document()), Ok(()));
+
+        assert!(matches!(result, Err(Error::IllegalDocument { .. })));
+    }
+
+    #[test]
+    fn combine_run_results_returns_the_server_error() {
+        let result =
+            combine_run_results(Ok(()), Ok(()), Err(std::io::Error::other("server failure")));
+
+        assert!(matches!(result, Err(Error::IoError { .. })));
+    }
 }

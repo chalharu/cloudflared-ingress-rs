@@ -145,36 +145,28 @@
     },
     {
       "id": "cargo-fmt",
-      "command": "cargo",
+      "command": "sh",
       "args": [
-        "fmt",
-        "--all"
+        "-c",
+        "repo_root=\"$PWD\" && rustup_cache=\"$(git rev-parse --git-path .copilot-hooks/podman-rustup)\" && cargo_cache=\"$(git rev-parse --git-path .copilot-hooks/podman-cargo)\" && mkdir -p \"$rustup_cache\" \"$cargo_cache\" && if [ ! -x \"$cargo_cache/bin/cargo\" ]; then podman run --rm -i --user \"$(id -u):$(id -g)\" -v \"$rustup_cache\":/host-rustup -v \"$cargo_cache\":/host-cargo docker.io/rust:1.94.0-bookworm sh -c 'cp -a /usr/local/rustup/. /host-rustup/ && cp -a /usr/local/cargo/. /host-cargo/'; fi && podman run --rm -i --user \"$(id -u):$(id -g)\" -v \"$repo_root\":/workspace -w /workspace -v \"$rustup_cache\":/usr/local/rustup -v \"$cargo_cache\":/usr/local/cargo docker.io/rust:1.94.0-bookworm sh -c 'rustfmt --version >/dev/null 2>&1 || rustup component add rustfmt >/tmp/rustfmt.log 2>&1; rustfmt --version >/dev/null 2>&1 || { cat /tmp/rustfmt.log >&2; exit 1; }; cargo fmt --all'"
       ],
       "appendFiles": false
     },
     {
       "id": "cargo-clippy-fix",
-      "command": "cargo",
+      "command": "sh",
       "args": [
-        "clippy",
-        "--fix",
-        "--allow-dirty",
-        "--allow-staged",
-        "--workspace",
-        "--all-targets"
+        "-c",
+        "repo_root=\"$PWD\" && rustup_cache=\"$(git rev-parse --git-path .copilot-hooks/podman-rustup)\" && cargo_cache=\"$(git rev-parse --git-path .copilot-hooks/podman-cargo)\" && mkdir -p \"$rustup_cache\" \"$cargo_cache\" && if [ ! -x \"$cargo_cache/bin/cargo\" ]; then podman run --rm -i --user \"$(id -u):$(id -g)\" -v \"$rustup_cache\":/host-rustup -v \"$cargo_cache\":/host-cargo docker.io/rust:1.94.0-bookworm sh -c 'cp -a /usr/local/rustup/. /host-rustup/ && cp -a /usr/local/cargo/. /host-cargo/'; fi && podman run --rm -i --user \"$(id -u):$(id -g)\" -v \"$repo_root\":/workspace -w /workspace -v \"$rustup_cache\":/usr/local/rustup -v \"$cargo_cache\":/usr/local/cargo docker.io/rust:1.94.0-bookworm sh -c 'cargo clippy --version >/dev/null 2>&1 || rustup component add clippy >/tmp/clippy.log 2>&1; cargo clippy --version >/dev/null 2>&1 || { cat /tmp/clippy.log >&2; exit 1; }; cargo clippy --fix --allow-dirty --allow-staged --workspace --all-targets'"
       ],
       "appendFiles": false
     },
     {
       "id": "cargo-clippy-check",
-      "command": "cargo",
+      "command": "sh",
       "args": [
-        "clippy",
-        "--workspace",
-        "--all-targets",
-        "--",
-        "-D",
-        "warnings"
+        "-c",
+        "repo_root=\"$PWD\" && rustup_cache=\"$(git rev-parse --git-path .copilot-hooks/podman-rustup)\" && cargo_cache=\"$(git rev-parse --git-path .copilot-hooks/podman-cargo)\" && mkdir -p \"$rustup_cache\" \"$cargo_cache\" && if [ ! -x \"$cargo_cache/bin/cargo\" ]; then podman run --rm -i --user \"$(id -u):$(id -g)\" -v \"$rustup_cache\":/host-rustup -v \"$cargo_cache\":/host-cargo docker.io/rust:1.94.0-bookworm sh -c 'cp -a /usr/local/rustup/. /host-rustup/ && cp -a /usr/local/cargo/. /host-cargo/'; fi && podman run --rm -i --user \"$(id -u):$(id -g)\" -v \"$repo_root\":/workspace -w /workspace -v \"$rustup_cache\":/usr/local/rustup -v \"$cargo_cache\":/usr/local/cargo docker.io/rust:1.94.0-bookworm sh -c 'cargo clippy --version >/dev/null 2>&1 || rustup component add clippy >/tmp/clippy.log 2>&1; cargo clippy --version >/dev/null 2>&1 || { cat /tmp/clippy.log >&2; exit 1; }; cargo clippy --workspace --all-targets -- -D warnings'"
       ],
       "appendFiles": false
     },

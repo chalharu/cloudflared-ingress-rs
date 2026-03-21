@@ -132,3 +132,61 @@ impl From<CloudflaredTunnelAccess> for Access {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn origin_request_conversion_preserves_access_configuration() {
+        let origin_request = CloudflaredTunnelOriginRequest {
+            no_tls_verify: Some(true),
+            http2_origin: Some(true),
+            access: Some(CloudflaredTunnelAccess {
+                required: true,
+                team_name: "team".to_string(),
+                aud_tag: vec!["aud".to_string()],
+            }),
+            ..Default::default()
+        };
+
+        let converted = OriginRequest::from(origin_request);
+
+        assert_eq!(converted.no_tls_verify, Some(true));
+        assert_eq!(converted.http2_origin, Some(true));
+        assert_eq!(
+            converted.access,
+            Some(Access {
+                required: true,
+                team_name: "team".to_string(),
+                aud_tag: vec!["aud".to_string()],
+            })
+        );
+    }
+
+    #[test]
+    fn ingress_conversion_preserves_hostname_service_and_path() {
+        let ingress = CloudflaredTunnelIngress {
+            hostname: "example.com".to_string(),
+            service: "https://service.example.com".to_string(),
+            path: Some("^/api".to_string()),
+            origin_request: Some(CloudflaredTunnelOriginRequest {
+                no_tls_verify: Some(true),
+                ..Default::default()
+            }),
+        };
+
+        let converted = Ingress::from(ingress);
+
+        assert_eq!(converted.hostname.as_deref(), Some("example.com"));
+        assert_eq!(converted.service, "https://service.example.com");
+        assert_eq!(converted.path.as_deref(), Some("^/api"));
+        assert_eq!(
+            converted
+                .origin_request
+                .as_ref()
+                .and_then(|origin_request| origin_request.no_tls_verify),
+            Some(true)
+        );
+    }
+}

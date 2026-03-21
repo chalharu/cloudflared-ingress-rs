@@ -76,7 +76,7 @@ function createToolStubs(
 		oxlint = true,
 		eslint = false,
 		ruff = false,
-		cargo = false,
+		podman = false,
 		hadolint = false,
 		firstTool = false,
 		secondTool = false,
@@ -165,18 +165,20 @@ function createToolStubs(
 		);
 	}
 
-	if (cargo) {
+	if (podman) {
 		writeExecutable(
-			path.join(binDir, "cargo"),
+			path.join(binDir, "podman"),
 			[
 				"#!/bin/sh",
-				'printf "cargo %s\\n" "$*" >> "$HOOK_LOG"',
-				'if [ "$1" = "fmt" ]; then',
-				"  exit 0",
-				"fi",
-				'if [ "$1" = "clippy" ] && [ "$2" = "--fix" ]; then',
-				"  exit 0",
-				"fi",
+				'printf "podman %s\\n" "$*" >> "$HOOK_LOG"',
+				'case "$*" in',
+				'  *"cp -a /usr/local/rustup/. /host-rustup/ && cp -a /usr/local/cargo/. /host-cargo/"*)',
+				"    exit 0 ;;",
+				'  *"cargo fmt --all"*)',
+				"    exit 0 ;;",
+				'  *"cargo clippy --fix --allow-dirty --allow-staged --workspace --all-targets"*)',
+				"    exit 0 ;;",
+				"esac",
 				'printf "clippy unresolved\\n" >&2',
 				"exit 1",
 			].join("\n"),
@@ -327,7 +329,7 @@ test("hooks config uses one main postToolUse command", () => {
 		hooksConfig.hooks.postToolUse[0].powershell,
 		"node .github/hooks/postToolUse/main.mjs",
 	);
-	assert.equal(hooksConfig.hooks.postToolUse[0].timeoutSec, 90);
+	assert.equal(hooksConfig.hooks.postToolUse[0].timeoutSec, 300);
 });
 
 test("linters config defines concrete tools and language pipelines", () => {
@@ -358,6 +360,9 @@ test("linters config defines concrete tools and language pipelines", () => {
 		"markdownlint-cli2",
 		"--fix",
 	]);
+	assert.equal(cargoFmt.command, "sh");
+	assert.match(cargoFmt.args[1], /podman run --rm -i/);
+	assert.match(cargoFmt.args[1], /docker\.io\/rust:1\.94\.0-bookworm/);
 	assert.equal(cargoFmt.appendFiles, false);
 	assert.equal(markdownPipeline.id, "markdown");
 	assert.deepEqual(markdownPipeline.matcher, ["\\.(?:md|markdown)$"]);
@@ -459,7 +464,7 @@ test("main hook runs Python Rust and Dockerfile pipelines", (t) => {
 		oxlint: false,
 		eslint: false,
 		ruff: true,
-		cargo: true,
+		podman: true,
 		hadolint: true,
 	});
 	const result = runHook(repo, env);
@@ -468,10 +473,13 @@ test("main hook runs Python Rust and Dockerfile pipelines", (t) => {
 	assert.equal(result.status, 1);
 	assert.match(hookLog, /ruff format app\.py/);
 	assert.match(hookLog, /ruff check --fix app\.py/);
-	assert.match(hookLog, /cargo fmt --all/);
 	assert.match(
 		hookLog,
-		/cargo clippy --fix --allow-dirty --allow-staged --workspace --all-targets/,
+		/podman run .*docker\.io\/rust:1\.94\.0-bookworm .*cargo fmt --all/,
+	);
+	assert.match(
+		hookLog,
+		/podman run .*cargo clippy --fix --allow-dirty --allow-staged --workspace --all-targets/,
 	);
 	assert.equal(hookLog.includes("cargo fmt --all src/lib.rs"), false);
 	assert.match(hookLog, /hadolint Dockerfile/);

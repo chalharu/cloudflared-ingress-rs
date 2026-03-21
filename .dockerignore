@@ -1,2 +1,10 @@
+.git
+.github
+AGENTS.md
+CONTRIBUTING.md
+README.md
+LICENSE
+helm/
 yaml/
+renovate.json
 target/

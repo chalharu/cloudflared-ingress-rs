@@ -1,7 +1,7 @@
 use std::{
     collections::{HashMap, HashSet},
     fmt::Debug,
-    sync::{Arc, Mutex},
+    sync::{Arc, Mutex, MutexGuard},
     time::Duration,
 };
 
@@ -46,10 +46,6 @@ pub async fn run_controllers(args: ControllerArgs) -> Result<()> {
     });
     run_controller(client, context).await;
 
-    // tokio::join!(
-    //     run_controller::<Ingress>(client.clone(), context.clone()),
-    //     run_controller::<IngressClass>(client.clone(), context.clone()),
-    // );
     Ok(())
 }
 
@@ -60,11 +56,7 @@ async fn get_ingress_classes(client: &Client, args: &ControllerArgs) -> Result<V
             .get(ingress_class)
             .await
             .ok()
-            .filter(|ic| {
-                ic.spec.as_ref().map_or(false, |s| {
-                    s.controller.as_ref().map_or(false, |c| c == ingress_class)
-                })
-            })
+            .filter(|ic| matches_requested_ingress_class(ic, args))
             .into_iter()
             .collect()
     } else {
@@ -73,12 +65,7 @@ async fn get_ingress_classes(client: &Client, args: &ControllerArgs) -> Result<V
             .await?
             .items
             .into_iter()
-            .filter(|ic| {
-                ic.spec
-                    .as_ref()
-                    .and_then(|s| s.controller.as_ref())
-                    .map_or(false, |c| c == args.ingress_controller())
-            })
+            .filter(|ic| matches_requested_ingress_class(ic, args))
             .collect()
     };
     Ok(ingress_class)
@@ -117,6 +104,92 @@ async fn get_services(client: &Client) -> Result<Vec<Service>> {
 }
 
 type PartialIngressClass = PartialObjectMeta<IngressClass>;
+type ServicePortMap = HashMap<String, HashMap<String, i32>>;
+type TargetIngressClassMap = HashMap<Option<String>, ObjectRef<PartialIngressClass>>;
+
+fn lock_target_ingressclass(
+    target_ingressclass: &Mutex<TargetIngressClassMap>,
+) -> MutexGuard<'_, TargetIngressClassMap> {
+    target_ingressclass
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
+fn ingress_class_matches_controller(ic: &IngressClass, controller: &str) -> bool {
+    ic.spec
+        .as_ref()
+        .and_then(|spec| spec.controller.as_ref())
+        .is_some_and(|current| current == controller)
+}
+
+fn matches_requested_ingress_class(ic: &IngressClass, args: &ControllerArgs) -> bool {
+    if !ingress_class_matches_controller(ic, args.ingress_controller()) {
+        return false;
+    }
+
+    args.ingress_class()
+        .map(|target| ic.name_any() == *target)
+        .unwrap_or(true)
+}
+
+fn build_service_port_map(services: Vec<Service>) -> ServicePortMap {
+    services
+        .into_iter()
+        .filter_map(|service| {
+            let namespace = service.namespace()?;
+            let ports = service
+                .spec
+                .iter()
+                .flat_map(|spec| {
+                    spec.ports.iter().flat_map(|ports| {
+                        ports.iter().filter_map(|port| {
+                            port.name.as_ref().map(|name| (name.clone(), port.port))
+                        })
+                    })
+                })
+                .collect();
+
+            Some((format!("{}.{}.svc", service.name_any(), namespace), ports))
+        })
+        .collect()
+}
+
+fn resolve_service_port(
+    service: &k8s_openapi::api::networking::v1::IngressServiceBackend,
+    namespace: &str,
+    services: &ServicePortMap,
+) -> Option<i32> {
+    service.port.as_ref().and_then(|port| {
+        port.number.or_else(|| {
+            let service_name = format!("{}.{}.svc", service.name.as_str(), namespace);
+            port.name.as_ref().and_then(|name| {
+                services
+                    .get(&service_name)
+                    .and_then(|service_ports| service_ports.get(name).copied())
+            })
+        })
+    })
+}
+
+fn build_service_url(scheme: &str, service_name: &str, port: Option<i32>) -> String {
+    match port
+        .filter(|port| !(*port == 80 && scheme == "http" || *port == 443 && scheme == "https"))
+    {
+        Some(port) => format!("{scheme}://{service_name}:{port}"),
+        None => format!("{scheme}://{service_name}"),
+    }
+}
+
+#[allow(clippy::result_large_err)]
+fn path_to_regex(path_type: &str, path: Option<&str>) -> Result<Option<String>> {
+    match path_type {
+        "Exact" => Ok(Some(format!("^{}$", regex_escape(path.unwrap_or("/"))))),
+        "Prefix" | "ImplementationSpecific" => Ok(path
+            .filter(|path| *path != "/")
+            .map(|path| format!("^{}", regex_escape(path)))),
+        _ => Err(Error::illegal_document()),
+    }
+}
 
 // Context for our reconciler
 #[derive(Clone)]
@@ -124,7 +197,7 @@ struct Context {
     /// Kubernetes client
     client: Client,
     args: ControllerArgs,
-    target_ingressclass: Arc<Mutex<HashMap<Option<String>, ObjectRef<PartialIngressClass>>>>,
+    target_ingressclass: Arc<Mutex<TargetIngressClassMap>>,
 }
 
 async fn run_controller(client: Client, context: Arc<Context>) {
@@ -147,9 +220,7 @@ async fn run_controller(client: Client, context: Arc<Context>) {
         .watches_stream(stream_ingress, move |i| {
             let target_ingressclass = target_ingressclass.clone();
             i.spec.and_then(|is| {
-                target_ingressclass
-                    .lock()
-                    .unwrap()
+                lock_target_ingressclass(&target_ingressclass)
                     .get(&is.ingress_class_name)
                     .cloned()
             })
@@ -186,10 +257,7 @@ impl Context {
     async fn reconcile(&self) -> Result<()> {
         let ingress_class = get_ingress_classes(&self.client, &self.args).await?;
 
-        let mut current_ic: HashSet<_> = self
-            .target_ingressclass
-            .lock()
-            .unwrap()
+        let mut current_ic: HashSet<_> = lock_target_ingressclass(&self.target_ingressclass)
             .keys()
             .cloned()
             .collect();
@@ -200,27 +268,22 @@ impl Context {
                 .annotations
                 .as_ref()
                 .and_then(|a| a.get("ingressclass.kubernetes.io/is-default-class"))
-                .map_or(false, |x| x.to_lowercase() == "true");
+                .is_some_and(|x| x.eq_ignore_ascii_case("true"));
             let name = ic.name_any();
 
             let obj_ref =
                 reflector::Lookup::to_object_ref(&ic.metadata.clone().into_request_partial(), ());
             if is_default_class {
                 current_ic.remove(&None);
-                self.target_ingressclass
-                    .lock()
-                    .unwrap()
-                    .insert(None, obj_ref.clone());
+                lock_target_ingressclass(&self.target_ingressclass).insert(None, obj_ref.clone());
             }
             current_ic.remove(&Some(name.clone()));
-            self.target_ingressclass
-                .lock()
-                .unwrap()
+            lock_target_ingressclass(&self.target_ingressclass)
                 .insert(Some(name.clone()), obj_ref.clone());
         }
 
         for ic in current_ic {
-            self.target_ingressclass.lock().unwrap().remove(&ic);
+            lock_target_ingressclass(&self.target_ingressclass).remove(&ic);
         }
 
         for ic in ingress_class {
@@ -229,7 +292,7 @@ impl Context {
                 .annotations
                 .as_ref()
                 .and_then(|a| a.get("ingressclass.kubernetes.io/is-default-class"))
-                .map_or(false, |x| x.to_lowercase() == "true");
+                .is_some_and(|x| x.eq_ignore_ascii_case("true"));
 
             self.reconcile_for_ingressclass(ic, is_default_class)
                 .await?;
@@ -258,24 +321,7 @@ impl Context {
             self.client.clone(),
             self.args.cloudflare_tunnel_namespace(),
         );
-        let services: HashMap<_, _> = get_services(&self.client)
-            .await?
-            .into_iter()
-            .map(|s| {
-                let svc_name = format!("{}.{}.svc", s.name_any(), s.namespace().unwrap());
-                let ports: HashMap<_, _> = s
-                    .spec
-                    .iter()
-                    .flat_map(|s| {
-                        s.ports.iter().flat_map(|p| {
-                            p.iter()
-                                .flat_map(|p| p.name.as_ref().map(|n| (n.clone(), p.port)))
-                        })
-                    })
-                    .collect();
-                (svc_name, ports)
-            })
-            .collect();
+        let services = build_service_port_map(get_services(&self.client).await?);
 
         for i in ingresses.into_iter() {
             let scheme = i
@@ -299,7 +345,7 @@ impl Context {
 
             let team_name = i.annotations().get(ACCESS_TEAM_ANNOTATION).cloned();
 
-            let ns = i.namespace().unwrap();
+            let ns = i.namespace().ok_or_else(Error::illegal_document)?;
 
             let Some(spec) = i.spec else {
                 continue;
@@ -346,43 +392,13 @@ impl Context {
                     let Some(ref service) = p.backend.service else {
                         return Err(Error::illegal_document());
                     };
-                    let svc_name = format!("{}.{}.svc", service.name, ns);
-                    let port = service
-                        .port
-                        .as_ref()
-                        .and_then(|p| {
-                            p.number.or_else(|| {
-                                p.name.as_ref().and_then(|p_name| {
-                                    services
-                                        .get(&svc_name)
-                                        .and_then(|svc| svc.get(p_name).cloned())
-                                })
-                            })
-                        })
-                        .filter(|&x| {
-                            !(x == 80 && scheme == "http" || x == 443 && scheme == "https")
-                        });
-                    let cfdt_service = if let Some(port) = port {
-                        format!("{}://{}:{}", scheme, svc_name, port)
-                    } else {
-                        format!("{}://{}", scheme, svc_name)
-                    };
-
-                    let path = match p.path_type.as_str() {
-                        "Exact" => Some(format!(
-                            "^{}$",
-                            p.path
-                                .as_ref()
-                                .map(|x| regex_escape(x.to_string()))
-                                .unwrap_or_else(|| "/".to_string())
-                        )),
-                        "Prefix" | "ImplementationSpecific" => p
-                            .path
-                            .as_ref()
-                            .filter(|x| x.as_str() != "/")
-                            .map(|x| format!("^{}", regex_escape(x.to_string()))),
-                        _ => return Err(Error::illegal_document()),
-                    };
+                    let svc_name = format!("{}.{}.svc", service.name.as_str(), ns);
+                    let cfdt_service = build_service_url(
+                        &scheme,
+                        &svc_name,
+                        resolve_service_port(service, &ns, &services),
+                    );
+                    let path = path_to_regex(p.path_type.as_str(), p.path.as_deref())?;
 
                     cfdt_ingress.push(CloudflaredTunnelIngress {
                         // Hostなしは最終的にCNAMEが振れないことからエラーとする
@@ -419,7 +435,7 @@ impl Context {
     }
 }
 
-fn regex_escape(s: String) -> String {
+fn regex_escape(s: &str) -> String {
     s.replace("\\", "\\\\")
         .replace("*", "\\*")
         .replace("+", "\\+")
@@ -435,4 +451,104 @@ fn regex_escape(s: String) -> String {
         .replace("-", "\\-")
         .replace("|", "\\|")
         .replace(".", "\\.")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use k8s_openapi::api::networking::v1::{
+        IngressClassSpec, IngressServiceBackend, ServiceBackendPort,
+    };
+
+    fn controller_args(ingress_class: Option<&str>) -> ControllerArgs {
+        ControllerArgs::new_for_test(
+            ingress_class.map(str::to_string),
+            "chalharu.top/cloudflared-ingress-controller",
+        )
+    }
+
+    fn ingress_class(name: &str, controller: &str) -> IngressClass {
+        IngressClass {
+            metadata: ObjectMeta {
+                name: Some(name.to_string()),
+                ..Default::default()
+            },
+            spec: Some(IngressClassSpec {
+                controller: Some(controller.to_string()),
+                parameters: None,
+            }),
+        }
+    }
+
+    #[test]
+    fn matches_requested_ingress_class_checks_the_controller_value() {
+        let args = controller_args(Some("public"));
+
+        let matching = ingress_class("public", args.ingress_controller());
+        let wrong_controller = ingress_class("public", "public");
+
+        assert!(matches_requested_ingress_class(&matching, &args));
+        assert!(!matches_requested_ingress_class(&wrong_controller, &args));
+    }
+
+    #[test]
+    fn resolve_service_port_supports_named_and_numeric_ports() {
+        let services = HashMap::from([(
+            "api.default.svc".to_string(),
+            HashMap::from([("https".to_string(), 8443)]),
+        )]);
+        let named = IngressServiceBackend {
+            name: "api".to_string(),
+            port: Some(ServiceBackendPort {
+                name: Some("https".to_string()),
+                number: None,
+            }),
+        };
+        let numeric = IngressServiceBackend {
+            name: "api".to_string(),
+            port: Some(ServiceBackendPort {
+                name: None,
+                number: Some(8080),
+            }),
+        };
+
+        assert_eq!(
+            resolve_service_port(&named, "default", &services),
+            Some(8443)
+        );
+        assert_eq!(
+            resolve_service_port(&numeric, "default", &services),
+            Some(8080)
+        );
+    }
+
+    #[test]
+    fn build_service_url_omits_default_ports() {
+        assert_eq!(
+            build_service_url("http", "api.default.svc", Some(80)),
+            "http://api.default.svc"
+        );
+        assert_eq!(
+            build_service_url("https", "api.default.svc", Some(443)),
+            "https://api.default.svc"
+        );
+        assert_eq!(
+            build_service_url("https", "api.default.svc", Some(8443)),
+            "https://api.default.svc:8443"
+        );
+    }
+
+    #[test]
+    fn path_to_regex_formats_exact_and_prefix_matches() {
+        assert_eq!(
+            path_to_regex("Exact", Some("/api/v1/users[0]")).unwrap(),
+            Some("^/api/v1/users\\[0\\]$".to_string())
+        );
+        assert_eq!(
+            path_to_regex("Prefix", Some("/v1+beta")).unwrap(),
+            Some("^/v1\\+beta".to_string())
+        );
+        assert_eq!(path_to_regex("Prefix", Some("/")).unwrap(), None);
+        assert!(path_to_regex("Unknown", Some("/")).is_err());
+    }
 }
