@@ -3,6 +3,19 @@ name: Docker Image CI
 on:
   push:
     branches: [ "main" ]
+    paths:
+      - 'src/**'
+      - 'Cargo.toml'
+      - 'Cargo.lock'
+      - 'Dockerfile'
+      - '.github/workflows/docker-image.yaml'
+  pull_request:
+    paths:
+      - 'src/**'
+      - 'Cargo.toml'
+      - 'Cargo.lock'
+      - 'Dockerfile'
+      - '.github/workflows/docker-image.yaml'
   workflow_dispatch:
 
 permissions:
@@ -24,10 +37,11 @@ jobs:
         run: echo ${{ steps.buildx.outputs.platforms }}
       - uses: docker/login-action@184bdaa0721073962dff0199f1fb9940f07167d1 # v3
         name: Docker login
+        if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
         with:
           registry: ghcr.io
           username: ${{ github.repository_owner }}
-          password: ${{ github.token }}
+          password: ${{ secrets.GITHUB_TOKEN }}
       - name: Docker meta
         id: meta
         uses: docker/metadata-action@c1e51972afc2121e065aed6d45c65596fe445f3f # v5
@@ -50,6 +64,7 @@ jobs:
           cache-to: type=gha,mode=max
 
       - name: Build And Push the Docker image
+        if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
         uses: docker/build-push-action@263435318d21b8e681c14492fe198d362a7d2c83 # v6
         with:
           context: .

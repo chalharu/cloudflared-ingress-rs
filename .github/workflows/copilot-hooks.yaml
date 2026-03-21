@@ -6,6 +6,11 @@ on:
     paths:
       - '.github/hooks/**'
       - '.github/workflows/copilot-hooks.yaml'
+  push:
+    branches: [ "main" ]
+    paths:
+      - '.github/hooks/**'
+      - '.github/workflows/copilot-hooks.yaml'
 
 permissions:
   contents: read

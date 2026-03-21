@@ -47,7 +47,22 @@ use crate::{cli::ControllerArgs, Error, Result};
 const TUNNEL_SECRET_KEY: &str = "tunnel_secret";
 const CFD_CONFIG_FILENAME: &str = "config.yml";
 const PATCH_PARAMS_APPLY_NAME: &str = "cloudflaredtunnel.chalharu.top";
-const CFD_DEPLOYMENT_IMAGE: &str = "cloudflare/cloudflared:2025.9.0";
+const CFD_DEPLOYMENT_IMAGE: &str = "cloudflare/cloudflared:2026.3.0";
+
+fn hostname_matches_zone(hostname: &str, zone_name: &str) -> bool {
+    hostname == zone_name || hostname.ends_with(&format!(".{zone_name}"))
+}
+
+fn best_matching_zone_id<'a>(
+    hostname: &str,
+    zones: impl IntoIterator<Item = (&'a str, &'a str)>,
+) -> Option<&'a str> {
+    zones
+        .into_iter()
+        .filter(|(zone_name, _)| hostname_matches_zone(hostname, zone_name))
+        .max_by_key(|(zone_name, _)| zone_name.len())
+        .map(|(_, zone_id)| zone_id)
+}
 
 // Context for our reconciler
 struct Context {
@@ -91,7 +106,7 @@ pub async fn run_controller(args: ControllerArgs) -> Result<()> {
 
 async fn reconcile(res: Arc<CloudflaredTunnel>, ctx: Arc<Context>) -> Result<Action> {
     // let name = res.name_any();
-    let ns = res.namespace().unwrap();
+    let ns = res.namespace().ok_or_else(Error::illegal_document)?;
     // info!("Reconciling CloudflaredTunnel \"{name}\" in {ns}");
     let api = Api::<CloudflaredTunnel>::namespaced(ctx.client.clone(), &ns);
     let finalizer_name = format!("{}/finalizer", PATCH_PARAMS_APPLY_NAME);
@@ -228,8 +243,8 @@ impl Context {
     ) -> Result<()> {
         info!("Reconcile cloudflaredTunnel: {}", cfdt.name_any());
         let name = cfdt.name_any();
-        let namespace = cfdt.namespace().unwrap();
-        let uid = cfdt.uid().unwrap();
+        let namespace = cfdt.namespace().ok_or_else(Error::illegal_document)?;
+        let uid = cfdt.uid().ok_or_else(Error::illegal_document)?;
         let owner_ref = OwnerReference {
             api_version: CloudflaredTunnel::api_version(&()).to_string(),
             kind: CloudflaredTunnel::kind(&()).to_string(),
@@ -244,16 +259,11 @@ impl Context {
         // CloudflaredTunnel.spec.ingress[].hostnameがどの　DNS Zoneに当てはまるか確認
         let mut dns_list = HashSet::new();
         for ingress in cfdt.spec.ingress.as_ref().iter().flat_map(|x| x.iter()) {
-            let Some(zone_id) = zones
-                .iter()
-                .filter_map(|z| {
-                    if ingress.hostname.ends_with(&format!(".{}", z.name)) {
-                        Some(z.id.clone())
-                    } else {
-                        None
-                    }
-                })
-                .next()
+            let Some(zone_id) = best_matching_zone_id(
+                &ingress.hostname,
+                zones.iter().map(|zone| (zone.name.as_str(), zone.id.as_str())),
+            )
+            .map(str::to_string)
             else {
                 // hostnameがzoneに当てはまらない場合
                 return Err(Error::illegal_document());
@@ -310,7 +320,7 @@ impl Context {
         for (ref hostname, ref zone_id) in &dns_list {
             if let Some(dns_record) = zone_dns_list
                 .get(zone_id)
-                .ok_or_else(|| unreachable!())
+                .ok_or_else(Error::illegal_document)
                 .and_then(|dns_records| {
                     dns_records
                         .iter()
@@ -521,5 +531,40 @@ impl Context {
         .await?;
 
         Ok((config_ref, secret_updated))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn best_matching_zone_id_matches_zone_apex() {
+        assert_eq!(
+            best_matching_zone_id("example.com", [("example.com", "zone-a")]),
+            Some("zone-a")
+        );
+    }
+
+    #[test]
+    fn best_matching_zone_id_prefers_the_most_specific_zone() {
+        assert_eq!(
+            best_matching_zone_id(
+                "api.eu.example.com",
+                [
+                    ("example.com", "zone-a"),
+                    ("eu.example.com", "zone-b"),
+                ],
+            ),
+            Some("zone-b")
+        );
+    }
+
+    #[test]
+    fn best_matching_zone_id_rejects_partial_suffix_matches() {
+        assert_eq!(
+            best_matching_zone_id("badexample.com", [("example.com", "zone-a")]),
+            None
+        );
     }
 }

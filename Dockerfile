@@ -1,9 +1,12 @@
-FROM alpine:3.22
+FROM alpine:3.22 AS build
+
+ARG RUST_VERSION=1.94.0
 
 RUN apk -U --no-cache add rustup gcc musl-dev
 
-RUN rustup-init -y
-ENV PATH="/root/.cargo/bin:$PATH"
+RUN rustup-init -y --profile minimal --default-toolchain ${RUST_VERSION}
+ENV PATH="/root/.cargo/bin:$PATH" \
+    RUSTUP_TOOLCHAIN="${RUST_VERSION}"
 
 ARG BUILDDIR=/source
 WORKDIR ${BUILDDIR}
@@ -21,5 +24,5 @@ RUN strip /cloudflared-ingress-rs
 
 FROM scratch
 WORKDIR /
-COPY --from=0 /cloudflared-ingress-rs ./
+COPY --from=build /cloudflared-ingress-rs ./
 ENTRYPOINT [ "/cloudflared-ingress-rs" ]
