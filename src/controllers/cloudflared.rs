@@ -39,7 +39,7 @@ use kube::{
     api::{DeleteParams, ObjectMeta, Patch, PatchParams},
     runtime::{Controller, controller::Action, finalizer::finalizer, watcher::Config},
 };
-use rand::{Rng, SeedableRng};
+use rand::TryRng as _;
 use tracing::{info, warn};
 use uuid::Uuid;
 
@@ -619,14 +619,14 @@ impl Context {
                 .ok_or_else(Error::illegal_document)?
                 .0
         } else {
-            let raw_data = tokio::task::spawn_blocking(|| {
+            let raw_data = tokio::task::spawn_blocking(|| -> std::io::Result<Vec<u8>> {
                 let mut raw_data = vec![0u8; 32];
-                let mut rng = rand::rngs::StdRng::try_from_rng(&mut rand::rngs::SysRng)
-                    .expect("system RNG should be available");
-                rng.fill_bytes(raw_data.as_mut_slice());
-                raw_data
+                let mut rng = rand::rngs::SysRng;
+                rng.try_fill_bytes(raw_data.as_mut_slice())
+                    .map_err(std::io::Error::other)?;
+                Ok(raw_data)
             })
-            .await?;
+            .await??;
             let data =
                 BTreeMap::from([(TUNNEL_SECRET_KEY.to_string(), ByteString(raw_data.clone()))]);
             api.patch(

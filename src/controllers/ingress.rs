@@ -285,7 +285,11 @@ fn ingress_rule_values(spec: &IngressSpec) -> Result<Vec<(Option<String>, HTTPIn
     let rules = spec.rules.as_deref().unwrap_or_default();
 
     if rules.is_empty() {
-        return Ok(Vec::new());
+        return if default_backend.is_some() {
+            Err(Error::illegal_document())
+        } else {
+            Ok(Vec::new())
+        };
     }
 
     let mut values = Vec::with_capacity(rules.len());
@@ -817,8 +821,8 @@ mod tests {
     }
 
     #[test]
-    fn ingress_rule_values_without_explicit_rules_returns_no_entries() {
-        let values = ingress_rule_values(&IngressSpec {
+    fn ingress_rule_values_rejects_default_backend_without_host_rules() {
+        let result = ingress_rule_values(&IngressSpec {
             default_backend: Some(IngressBackend {
                 service: Some(IngressServiceBackend {
                     name: "api".to_string(),
@@ -830,10 +834,9 @@ mod tests {
                 resource: None,
             }),
             ..Default::default()
-        })
-        .expect("missing rules should be ignored");
+        });
 
-        assert!(values.is_empty());
+        assert!(matches!(result, Err(Error::IllegalDocument { .. })));
     }
 
     #[test]
@@ -883,7 +886,7 @@ mod tests {
     }
 
     #[test]
-    fn build_tunnel_ingresses_for_ingress_skips_default_backend_without_host_rules() {
+    fn build_tunnel_ingresses_for_ingress_rejects_default_backend_without_host_rules() {
         let services = HashMap::from([(
             "api.default.svc".to_string(),
             HashMap::from([("https".to_string(), 8443)]),
@@ -910,10 +913,9 @@ mod tests {
             ..Default::default()
         };
 
-        let rendered = build_tunnel_ingresses_for_ingress(ingress, &services)
-            .expect("default-backend-only ingress should be skipped");
+        let result = build_tunnel_ingresses_for_ingress(ingress, &services);
 
-        assert!(rendered.is_empty());
+        assert!(matches!(result, Err(Error::IllegalDocument { .. })));
     }
 
     #[test]
