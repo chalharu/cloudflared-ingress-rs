@@ -20,6 +20,7 @@ async fn index(_req: HttpRequest) -> impl Responder {
     HttpResponse::Ok()
 }
 
+#[allow(clippy::result_large_err)]
 #[tokio::main]
 async fn main() -> Result<()> {
     let args = Cli::parse();
@@ -52,6 +53,7 @@ async fn main() -> Result<()> {
     Ok(())
 }
 
+#[allow(clippy::result_large_err)]
 fn combine_run_results(
     ingress_result: Result<()>,
     cloudflared_result: Result<()>,

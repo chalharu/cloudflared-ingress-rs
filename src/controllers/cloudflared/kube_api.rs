@@ -38,7 +38,7 @@ pub(super) async fn patch_cloudflaredtunnel_status<F: FnOnce(&mut CloudflaredTun
     if current_status
         .status
         .as_ref()
-        .map_or(false, |current_status| new_status == *current_status)
+        .is_some_and(|current_status| new_status == *current_status)
     {
         return Ok(current_status);
     }
@@ -102,7 +102,7 @@ pub(super) async fn patch_opaque_secret(
         )
         .await?;
 
-    Ok(!before.map_or(false, |b| {
+    Ok(!before.is_some_and(|b| {
         b.metadata.resource_version == patched.metadata.resource_version
     }))
 }
@@ -122,6 +122,7 @@ pub(super) async fn get_cloudflaredtunnel(client: &Client) -> Result<Vec<Cloudfl
     Ok(results)
 }
 
+#[allow(clippy::too_many_arguments)]
 pub(super) async fn patch_deployment(
     client: &Client,
     name: &str,
@@ -212,7 +213,7 @@ pub(super) async fn patch_deployment(
         )
         .await?;
 
-    Ok(!before.map_or(false, |b| {
+    Ok(!before.is_some_and(|b| {
         b.metadata.generation == patched.metadata.generation
     }))
 }

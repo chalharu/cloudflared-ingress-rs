@@ -95,14 +95,11 @@ impl CloudflareApi {
             params: Params { cascade: false },
         };
 
-        api.request(&endpoint).await.map_or_else(
-            |e| match e {
-                // Tunnelが削除済みであった場合、Decode errorが発生する
-                ApiFailure::Invalid(inner) if inner.is_decode() => Ok(()),
-                _ => Err(Error::from(e)),
-            },
-            |_| Ok(()),
-        )
+        match api.request(&endpoint).await {
+            Ok(_) => Ok(()),
+            Err(ApiFailure::Invalid(inner)) if inner.is_decode() => Ok(()),
+            Err(e) => Err(Error::from(e)),
+        }
     }
 
     pub(super) async fn list_dns_cname(
@@ -318,16 +315,14 @@ mod test {
     }
 
     async fn create_api_client(url: &str) -> HttpApiClient {
-        let api = HttpApiClient::new(
+        HttpApiClient::new(
             Credentials::UserAuthToken {
                 token: "DEADBEAF".to_string(),
             },
             ClientConfig::default(),
             Environment::Custom(url.to_string()),
         )
-        .unwrap();
-
-        api
+        .unwrap()
     }
 
     #[tokio::test]
@@ -383,13 +378,12 @@ mod test {
         let server = start_mock_server().await;
         let api = create_api_client(server.url().as_str()).await;
         let api = CloudflareApi::new(Arc::new(api));
-        let _response = api
-            .delete_tunnel(
-                "a0000000000000000000000000000001".to_string(),
-                "a0000000000000000000000000000002".to_string(),
-            )
-            .await
-            .unwrap();
+        api.delete_tunnel(
+            "a0000000000000000000000000000001".to_string(),
+            "a0000000000000000000000000000002".to_string(),
+        )
+        .await
+        .unwrap();
     }
 
     #[tokio::test]

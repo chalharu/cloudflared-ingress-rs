@@ -319,24 +319,28 @@ impl Context {
 
         // {tunnelid}.cfargotunnel.com以外のCNAMEレコード、Aレコード・AAAAレコードが無いことを確認する
         for (ref hostname, ref zone_id) in &dns_list {
-            if let Some(dns_record) = zone_dns_list
+            let dns_records = zone_dns_list
                 .get(zone_id)
-                .ok_or_else(Error::illegal_document)
-                .and_then(|dns_records| {
-                    dns_records
-                        .iter()
-                        .filter(|dns_record| dns_record.name.as_str() == hostname.as_str())
-                        .try_fold(None, |acc, dns_record| match &dns_record.content {
-                            DnsContent::CNAME { content } if content.as_str() == cname_content => {
-                                Ok(Some(dns_record))
-                            }
-                            DnsContent::A { .. }
-                            | DnsContent::AAAA { .. }
-                            | DnsContent::CNAME { .. } => Err(Error::illegal_document()),
-                            _ => Ok(acc),
-                        })
-                })?
-            {
+                .ok_or_else(Error::illegal_document)?;
+            let mut matching_dns_record = None;
+
+            for dns_record in dns_records {
+                if dns_record.name.as_str() != hostname.as_str() {
+                    continue;
+                }
+
+                match &dns_record.content {
+                    DnsContent::CNAME { content } if content.as_str() == cname_content => {
+                        matching_dns_record = Some(dns_record);
+                    }
+                    DnsContent::A { .. } | DnsContent::AAAA { .. } | DnsContent::CNAME { .. } => {
+                        return Err(Error::illegal_document());
+                    }
+                    _ => {}
+                }
+            }
+
+            if let Some(dns_record) = matching_dns_record {
                 current_cname_list.remove(&(dns_record.id.clone(), zone_id.clone()));
             } else {
                 self.cloudflare_api

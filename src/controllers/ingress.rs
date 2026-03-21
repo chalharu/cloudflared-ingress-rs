@@ -119,7 +119,7 @@ fn ingress_class_matches_controller(ic: &IngressClass, controller: &str) -> bool
     ic.spec
         .as_ref()
         .and_then(|spec| spec.controller.as_ref())
-        .map_or(false, |current| current == controller)
+        .is_some_and(|current| current == controller)
 }
 
 fn matches_requested_ingress_class(ic: &IngressClass, args: &ControllerArgs) -> bool {
@@ -180,6 +180,7 @@ fn build_service_url(scheme: &str, service_name: &str, port: Option<i32>) -> Str
     }
 }
 
+#[allow(clippy::result_large_err)]
 fn path_to_regex(path_type: &str, path: Option<&str>) -> Result<Option<String>> {
     match path_type {
         "Exact" => Ok(Some(format!("^{}$", regex_escape(path.unwrap_or("/"))))),
@@ -267,7 +268,7 @@ impl Context {
                 .annotations
                 .as_ref()
                 .and_then(|a| a.get("ingressclass.kubernetes.io/is-default-class"))
-                .map_or(false, |x| x.to_lowercase() == "true");
+                .is_some_and(|x| x.eq_ignore_ascii_case("true"));
             let name = ic.name_any();
 
             let obj_ref =
@@ -291,7 +292,7 @@ impl Context {
                 .annotations
                 .as_ref()
                 .and_then(|a| a.get("ingressclass.kubernetes.io/is-default-class"))
-                .map_or(false, |x| x.to_lowercase() == "true");
+                .is_some_and(|x| x.eq_ignore_ascii_case("true"));
 
             self.reconcile_for_ingressclass(ic, is_default_class)
                 .await?;
@@ -476,7 +477,6 @@ mod tests {
                 controller: Some(controller.to_string()),
                 parameters: None,
             }),
-            ..Default::default()
         }
     }
 
