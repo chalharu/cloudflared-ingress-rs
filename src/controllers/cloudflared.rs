@@ -43,7 +43,13 @@ use rand::{Rng, SeedableRng};
 use tracing::{info, warn};
 use uuid::Uuid;
 
-use self::{cf_api::*, kube_api::*};
+use self::{
+    cf_api::{CloudflareApi, tunnel_cname},
+    kube_api::{
+        get_cloudflaredtunnel, patch_cloudflaredtunnel_status, patch_deployment,
+        patch_opaque_secret_string, restart_deployment,
+    },
+};
 use crate::{Error, Result, cli::ControllerArgs};
 
 const TUNNEL_SECRET_KEY: &str = "tunnel_secret";
@@ -140,6 +146,67 @@ fn render_tunnel_config(
             (CFD_CONFIG_FILENAME.to_string(), config_string),
         ]),
     })
+}
+
+#[derive(Clone, Copy)]
+struct DnsRecordRef<'a> {
+    id: &'a str,
+    name: &'a str,
+    content: &'a DnsContent,
+}
+
+fn dns_record_ref(record: &DnsRecord) -> DnsRecordRef<'_> {
+    DnsRecordRef {
+        id: record.id.as_str(),
+        name: record.name.as_str(),
+        content: &record.content,
+    }
+}
+
+fn collect_current_cname_records(
+    zone_dns_list: &HashMap<String, Vec<DnsRecord>>,
+    cname_content: &str,
+) -> HashSet<(String, String)> {
+    zone_dns_list
+        .iter()
+        .flat_map(|(zone_id, records)| {
+            records
+                .iter()
+                .filter_map(move |record| match &record.content {
+                    DnsContent::CNAME { content } if content.as_str() == cname_content => {
+                        Some((record.id.clone(), zone_id.clone()))
+                    }
+                    _ => None,
+                })
+        })
+        .collect()
+}
+
+#[allow(clippy::result_large_err)]
+fn matching_hostname_cname_record<'a>(
+    dns_records: impl IntoIterator<Item = DnsRecordRef<'a>>,
+    hostname: &str,
+    cname_content: &str,
+) -> Result<Option<&'a str>> {
+    let mut matching_dns_record_id = None;
+
+    for dns_record in dns_records {
+        if dns_record.name != hostname {
+            continue;
+        }
+
+        match dns_record.content {
+            DnsContent::CNAME { content } if content.as_str() == cname_content => {
+                matching_dns_record_id = Some(dns_record.id);
+            }
+            DnsContent::A { .. } | DnsContent::AAAA { .. } | DnsContent::CNAME { .. } => {
+                return Err(Error::illegal_document());
+            }
+            _ => {}
+        }
+    }
+
+    Ok(matching_dns_record_id)
 }
 
 // Context for our reconciler
@@ -304,6 +371,44 @@ impl Context {
         Ok(tunnel)
     }
 
+    async fn sync_tunnel_dns_records(
+        &self,
+        desired_dns_records: &HashSet<(String, String)>,
+        zone_dns_list: &HashMap<String, Vec<DnsRecord>>,
+        tunnel_id: &str,
+    ) -> Result<()> {
+        let cname_content = tunnel_cname(tunnel_id);
+        let mut current_cname_records =
+            collect_current_cname_records(zone_dns_list, &cname_content);
+
+        for (hostname, zone_id) in desired_dns_records {
+            let dns_records = zone_dns_list
+                .get(zone_id)
+                .ok_or_else(Error::illegal_document)?;
+
+            if let Some(dns_record_id) = matching_hostname_cname_record(
+                dns_records.iter().map(dns_record_ref),
+                hostname,
+                &cname_content,
+            )? {
+                current_cname_records.remove(&(dns_record_id.to_string(), zone_id.clone()));
+                continue;
+            }
+
+            self.cloudflare_api
+                .create_dns_cname(zone_id.as_str(), tunnel_id, hostname.as_str())
+                .await?;
+        }
+
+        for (dns_id, zone_id) in current_cname_records {
+            self.cloudflare_api
+                .delete_dns_cname(zone_id.as_str(), dns_id.as_str())
+                .await?;
+        }
+
+        Ok(())
+    }
+
     async fn reconcile_tunnel(
         &self,
         cfdt: CloudflaredTunnel,
@@ -355,57 +460,8 @@ impl Context {
             )
             .await?;
         let tunnel_id = tunnel.id.as_hyphenated().to_string();
-
-        // {tunnelid}.cfargotunnel.comのCNAMEレコードリストを作成する
-        let cname_content = tunnel_cname(&tunnel_id);
-        let mut current_cname_list = zone_dns_list
-            .iter()
-            .flat_map(|(zone_id, rec)| {
-                rec.iter().flat_map(|rec| match rec.content {
-                    DnsContent::CNAME { ref content } if content.as_str() == cname_content => {
-                        Some((rec.id.clone(), zone_id.clone()))
-                    }
-                    _ => None,
-                })
-            })
-            .collect::<HashSet<_>>();
-
-        // {tunnelid}.cfargotunnel.com以外のCNAMEレコード、Aレコード・AAAAレコードが無いことを確認する
-        for (hostname, zone_id) in &dns_list {
-            let dns_records = zone_dns_list
-                .get(zone_id)
-                .ok_or_else(Error::illegal_document)?;
-            let mut matching_dns_record = None;
-
-            for dns_record in dns_records {
-                if dns_record.name.as_str() != hostname.as_str() {
-                    continue;
-                }
-
-                match &dns_record.content {
-                    DnsContent::CNAME { content } if content.as_str() == cname_content => {
-                        matching_dns_record = Some(dns_record);
-                    }
-                    DnsContent::A { .. } | DnsContent::AAAA { .. } | DnsContent::CNAME { .. } => {
-                        return Err(Error::illegal_document());
-                    }
-                    _ => {}
-                }
-            }
-
-            if let Some(dns_record) = matching_dns_record {
-                current_cname_list.remove(&(dns_record.id.clone(), zone_id.clone()));
-            } else {
-                self.cloudflare_api
-                    .create_dns_cname(zone_id.as_str(), tunnel_id.as_str(), hostname.as_str())
-                    .await?;
-            }
-        }
-        for (dns_id, zone_id) in current_cname_list {
-            self.cloudflare_api
-                .delete_dns_cname(zone_id.as_str(), dns_id.as_str())
-                .await?;
-        }
+        self.sync_tunnel_dns_records(&dns_list, &zone_dns_list, &tunnel_id)
+            .await?;
 
         let (tunnel_config_secret_name, secret_updated) = self
             .get_tunnel_config(&cfdt, owner_ref.clone(), tunnel, &tunnel_secret)
@@ -514,7 +570,7 @@ impl Context {
 
         if secret.len() < 32 {
             return Err(Error::illegal_document());
-        };
+        }
 
         Ok(secret)
     }
@@ -742,5 +798,112 @@ mod tests {
             2
         );
         assert_eq!(yaml["ingress"][1]["service"], "http_status:404");
+    }
+
+    #[test]
+    fn matching_hostname_cname_record_returns_the_matching_record_id() {
+        let other_content = DnsContent::CNAME {
+            content: "demo.cfargotunnel.com".to_string(),
+        };
+        let matching_content = DnsContent::CNAME {
+            content: "demo.cfargotunnel.com".to_string(),
+        };
+
+        let record_id = matching_hostname_cname_record(
+            [
+                DnsRecordRef {
+                    id: "dns-1",
+                    name: "other.example.com",
+                    content: &other_content,
+                },
+                DnsRecordRef {
+                    id: "dns-2",
+                    name: "app.example.com",
+                    content: &matching_content,
+                },
+            ],
+            "app.example.com",
+            "demo.cfargotunnel.com",
+        )
+        .expect("matching CNAME should be accepted");
+
+        assert_eq!(record_id, Some("dns-2"));
+    }
+
+    #[test]
+    fn matching_hostname_cname_record_returns_none_when_no_match() {
+        let other_content = DnsContent::CNAME {
+            content: "demo.cfargotunnel.com".to_string(),
+        };
+
+        let record_id = matching_hostname_cname_record(
+            [DnsRecordRef {
+                id: "dns-1",
+                name: "other.example.com",
+                content: &other_content,
+            }],
+            "app.example.com",
+            "demo.cfargotunnel.com",
+        )
+        .expect("unrelated records should be ignored");
+
+        assert_eq!(record_id, None);
+    }
+
+    #[test]
+    fn matching_hostname_cname_record_rejects_conflicting_cname() {
+        let conflicting_content = DnsContent::CNAME {
+            content: "other.cfargotunnel.com".to_string(),
+        };
+
+        let result = matching_hostname_cname_record(
+            [DnsRecordRef {
+                id: "dns-1",
+                name: "app.example.com",
+                content: &conflicting_content,
+            }],
+            "app.example.com",
+            "demo.cfargotunnel.com",
+        );
+
+        assert!(matches!(result, Err(Error::IllegalDocument { .. })));
+    }
+
+    #[test]
+    fn matching_hostname_cname_record_rejects_a_record() {
+        let conflicting_content = DnsContent::A {
+            content: std::net::Ipv4Addr::new(192, 0, 2, 1),
+        };
+
+        let result = matching_hostname_cname_record(
+            [DnsRecordRef {
+                id: "dns-1",
+                name: "app.example.com",
+                content: &conflicting_content,
+            }],
+            "app.example.com",
+            "demo.cfargotunnel.com",
+        );
+
+        assert!(matches!(result, Err(Error::IllegalDocument { .. })));
+    }
+
+    #[test]
+    fn matching_hostname_cname_record_rejects_aaaa_record() {
+        let conflicting_content = DnsContent::AAAA {
+            content: std::net::Ipv6Addr::LOCALHOST,
+        };
+
+        let result = matching_hostname_cname_record(
+            [DnsRecordRef {
+                id: "dns-1",
+                name: "app.example.com",
+                content: &conflicting_content,
+            }],
+            "app.example.com",
+            "demo.cfargotunnel.com",
+        );
+
+        assert!(matches!(result, Err(Error::IllegalDocument { .. })));
     }
 }
