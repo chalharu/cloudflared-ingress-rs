@@ -15,7 +15,9 @@
 - `CONTROL_PLANE_JOB_NAMESPACE` lacks the PVC-backed `/workspace` mount that long-running jobs need.
 - `CONTROL_PLANE_K8S_NAMESPACE` does expose the `/workspace` PVC, but the default runtime env points to a missing `control-plane-job` service account there. Clear `CONTROL_PLANE_JOB_SERVICE_ACCOUNT` before starting the job.
 - Clone the pushed branch into `/workspace/src/<repo>/<branch>` and keep persistent caches in `/workspace/cache/<repo>/<branch>`. Unpushed local changes are not visible to the job.
+- `k8s-rust.sh` injects its local `install-sccache.sh` into the job so bootstrap changes can be validated before push, but the Rust source build/test still runs against the pushed branch clone.
 - The default `control-plane-run` job limit is `2Gi` memory here. First-time `cargo install --locked sccache` can be OOM-killed unless it is serialized with `CARGO_BUILD_JOBS=1` (or `SCCACHE_BOOTSTRAP_JOBS=1` when using `k8s-rust.sh`).
+- The helper scripts now prefer prebuilt `sccache` release tarballs from `https://github.com/mozilla/sccache/releases/`. `SCCACHE_VERSION` and `SCCACHE_RELEASE_BASE_URL` can override the download source, and unsupported architectures still fall back to serialized `cargo install --locked sccache`.
 
 ## Cache layout
 

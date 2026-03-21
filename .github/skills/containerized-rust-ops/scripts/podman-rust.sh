@@ -68,6 +68,9 @@ esac
 repo_root="$(git rev-parse --show-toplevel 2>/dev/null || true)"
 [[ -n "${repo_root}" ]] || die "run this script from inside the repository"
 
+sccache_version="${SCCACHE_VERSION:-0.14.0}"
+sccache_release_base_url="${SCCACHE_RELEASE_BASE_URL:-https://github.com/mozilla/sccache/releases/download}"
+sccache_bootstrap_jobs="${SCCACHE_BOOTSTRAP_JOBS:-1}"
 rustup_cache="$(git -C "${repo_root}" rev-parse --git-path .copilot-cache/podman-rustup)"
 cargo_cache="$(git -C "${repo_root}" rev-parse --git-path .copilot-cache/podman-cargo)"
 target_cache="$(git -C "${repo_root}" rev-parse --git-path .copilot-cache/podman-target)"
@@ -93,6 +96,11 @@ bootstrap_toolchain() {
 
 ensure_tools() {
   "${podman_cmd[@]}" run --rm -i \
+    -e SCCACHE_VERSION="${sccache_version}" \
+    -e SCCACHE_RELEASE_BASE_URL="${sccache_release_base_url}" \
+    -e SCCACHE_BOOTSTRAP_JOBS="${sccache_bootstrap_jobs}" \
+    -v "${repo_root}:/workspace" \
+    -w /workspace \
     -v "${rustup_cache}:/usr/local/rustup" \
     -v "${cargo_cache}:/usr/local/cargo" \
     "${image}" \
@@ -105,7 +113,7 @@ ensure_tools() {
       rustfmt --version >/dev/null 2>&1 || { cat /tmp/rustfmt.log >&2; exit 1; }
       cargo clippy --version >/dev/null 2>&1 || rustup component add clippy >/tmp/clippy.log 2>&1
       cargo clippy --version >/dev/null 2>&1 || { cat /tmp/clippy.log >&2; exit 1; }
-      command -v sccache >/dev/null 2>&1 || cargo install --locked sccache
+      sh .github/skills/containerized-rust-ops/scripts/install-sccache.sh
     '
 }
 

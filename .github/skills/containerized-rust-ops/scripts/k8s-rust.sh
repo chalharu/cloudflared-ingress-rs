@@ -74,6 +74,9 @@ runtime_env="${CONTROL_PLANE_RUNTIME_ENV_FILE:-${HOME:-/home/copilot}/.config/co
 
 repo_root="$(git rev-parse --show-toplevel 2>/dev/null || true)"
 [[ -n "${repo_root}" ]] || die "run this script from inside the repository"
+install_sccache_script_path="${repo_root}/.github/skills/containerized-rust-ops/scripts/install-sccache.sh"
+[[ -f "${install_sccache_script_path}" ]] || die "install-sccache.sh not found: ${install_sccache_script_path}"
+install_sccache_script="$(cat "${install_sccache_script_path}")"
 
 repo_name="$(basename "${repo_root}")"
 branch="${K8S_RUST_BRANCH:-$(git branch --show-current)}"
@@ -83,6 +86,9 @@ repo_url="${K8S_RUST_REMOTE_URL:-$(git -C "${repo_root}" remote get-url origin)}
 [[ -n "${repo_url}" ]] || die "could not determine origin URL"
 namespace="${CONTROL_PLANE_K8S_NAMESPACE:-}"
 [[ -n "${namespace}" ]] || die "CONTROL_PLANE_K8S_NAMESPACE must be set"
+sccache_version="${SCCACHE_VERSION:-0.14.0}"
+sccache_release_base_url="${SCCACHE_RELEASE_BASE_URL:-https://github.com/mozilla/sccache/releases/download}"
+sccache_bootstrap_jobs="${SCCACHE_BOOTSTRAP_JOBS:-1}"
 
 branch_key="$(slugify "${branch}")"
 repo_key="$(slugify "${repo_name}")"
@@ -106,6 +112,9 @@ repo_url_q="$(printf '%q' "${repo_url}")"
 branch_q="$(printf '%q' "${branch}")"
 repo_key_q="$(printf '%q' "${repo_key}")"
 branch_key_q="$(printf '%q' "${branch_key}")"
+sccache_version_q="$(printf '%q' "${sccache_version}")"
+sccache_release_base_url_q="$(printf '%q' "${sccache_release_base_url}")"
+sccache_bootstrap_jobs_q="$(printf '%q' "${sccache_bootstrap_jobs}")"
 
 job_script="$(cat <<EOF
 set -eu
@@ -113,6 +122,9 @@ repo_url=${repo_url_q}
 branch=${branch_q}
 repo_key=${repo_key_q}
 branch_key=${branch_key_q}
+sccache_version=${sccache_version_q}
+sccache_release_base_url=${sccache_release_base_url_q}
+sccache_bootstrap_jobs=${sccache_bootstrap_jobs_q}
 workspace_root=/workspace
 src_root="\${workspace_root}/src/\${repo_key}/\${branch_key}"
 cache_root="\${workspace_root}/cache/\${repo_key}/\${branch_key}"
@@ -135,15 +147,22 @@ export SCCACHE_DIR="\${sccache_dir}"
 export SCCACHE_CACHE_SIZE="\${SCCACHE_CACHE_SIZE:-10G}"
 export CARGO_INCREMENTAL=0
 export CARGO_TERM_PROGRESS_WHEN=never
+rm -rf "\${src_root}"
+git clone --branch "\${branch}" --depth 1 "\${repo_url}" "\${src_root}"
+cd "\${src_root}"
+cat > /tmp/install-sccache.sh <<'INSTALL_SCCACHE'
+${install_sccache_script}
+INSTALL_SCCACHE
+chmod 0755 /tmp/install-sccache.sh
 rustfmt --version >/dev/null 2>&1 || rustup component add rustfmt >/tmp/rustfmt.log 2>&1
 rustfmt --version >/dev/null 2>&1 || { cat /tmp/rustfmt.log >&2; exit 1; }
 cargo clippy --version >/dev/null 2>&1 || rustup component add clippy >/tmp/clippy.log 2>&1
 cargo clippy --version >/dev/null 2>&1 || { cat /tmp/clippy.log >&2; exit 1; }
-command -v sccache >/dev/null 2>&1 || CARGO_BUILD_JOBS="\${SCCACHE_BOOTSTRAP_JOBS:-1}" cargo install --locked sccache
+export SCCACHE_VERSION="\${sccache_version}"
+export SCCACHE_RELEASE_BASE_URL="\${sccache_release_base_url}"
+export SCCACHE_BOOTSTRAP_JOBS="\${sccache_bootstrap_jobs}"
+sh /tmp/install-sccache.sh
 export RUSTC_WRAPPER="\${CARGO_HOME}/bin/sccache"
-rm -rf "\${src_root}"
-git clone --branch "\${branch}" --depth 1 "\${repo_url}" "\${src_root}"
-cd "\${src_root}"
 if "\$@"; then
   status=0
 else
