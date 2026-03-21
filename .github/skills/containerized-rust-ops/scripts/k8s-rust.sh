@@ -133,14 +133,14 @@ export PATH="\${CARGO_HOME}/bin:\${PATH}"
 export CARGO_TARGET_DIR="\${target_dir}"
 export SCCACHE_DIR="\${sccache_dir}"
 export SCCACHE_CACHE_SIZE="\${SCCACHE_CACHE_SIZE:-10G}"
-export RUSTC_WRAPPER="\${CARGO_HOME}/bin/sccache"
 export CARGO_INCREMENTAL=0
 export CARGO_TERM_PROGRESS_WHEN=never
 rustfmt --version >/dev/null 2>&1 || rustup component add rustfmt >/tmp/rustfmt.log 2>&1
 rustfmt --version >/dev/null 2>&1 || { cat /tmp/rustfmt.log >&2; exit 1; }
 cargo clippy --version >/dev/null 2>&1 || rustup component add clippy >/tmp/clippy.log 2>&1
 cargo clippy --version >/dev/null 2>&1 || { cat /tmp/clippy.log >&2; exit 1; }
-command -v sccache >/dev/null 2>&1 || cargo install --locked sccache
+command -v sccache >/dev/null 2>&1 || CARGO_BUILD_JOBS="\${SCCACHE_BOOTSTRAP_JOBS:-1}" cargo install --locked sccache
+export RUSTC_WRAPPER="\${CARGO_HOME}/bin/sccache"
 rm -rf "\${src_root}"
 git clone --branch "\${branch}" --depth 1 "\${repo_url}" "\${src_root}"
 cd "\${src_root}"

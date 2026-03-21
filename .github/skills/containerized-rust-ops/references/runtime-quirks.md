@@ -15,6 +15,7 @@
 - `CONTROL_PLANE_JOB_NAMESPACE` lacks the PVC-backed `/workspace` mount that long-running jobs need.
 - `CONTROL_PLANE_K8S_NAMESPACE` does expose the `/workspace` PVC, but the default runtime env points to a missing `control-plane-job` service account there. Clear `CONTROL_PLANE_JOB_SERVICE_ACCOUNT` before starting the job.
 - Clone the pushed branch into `/workspace/src/<repo>/<branch>` and keep persistent caches in `/workspace/cache/<repo>/<branch>`. Unpushed local changes are not visible to the job.
+- The default `control-plane-run` job limit is `2Gi` memory here. First-time `cargo install --locked sccache` can be OOM-killed unless it is serialized with `CARGO_BUILD_JOBS=1` (or `SCCACHE_BOOTSTRAP_JOBS=1` when using `k8s-rust.sh`).
 
 ## Cache layout
 
