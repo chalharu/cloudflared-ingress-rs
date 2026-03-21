@@ -209,6 +209,43 @@ fn matching_hostname_cname_record<'a>(
     Ok(matching_dns_record_id)
 }
 
+async fn sync_tunnel_dns_records(
+    cloudflare_api: &CloudflareApi,
+    desired_dns_records: &HashSet<(String, String)>,
+    zone_dns_list: &HashMap<String, Vec<DnsRecord>>,
+    tunnel_id: &str,
+) -> Result<()> {
+    let cname_content = tunnel_cname(tunnel_id);
+    let mut current_cname_records = collect_current_cname_records(zone_dns_list, &cname_content);
+
+    for (hostname, zone_id) in desired_dns_records {
+        let dns_records = zone_dns_list
+            .get(zone_id)
+            .ok_or_else(Error::illegal_document)?;
+
+        if let Some(dns_record_id) = matching_hostname_cname_record(
+            dns_records.iter().map(dns_record_ref),
+            hostname,
+            &cname_content,
+        )? {
+            current_cname_records.remove(&(dns_record_id.to_string(), zone_id.clone()));
+            continue;
+        }
+
+        cloudflare_api
+            .create_dns_cname(zone_id.as_str(), tunnel_id, hostname.as_str())
+            .await?;
+    }
+
+    for (dns_id, zone_id) in current_cname_records {
+        cloudflare_api
+            .delete_dns_cname(zone_id.as_str(), dns_id.as_str())
+            .await?;
+    }
+
+    Ok(())
+}
+
 // Context for our reconciler
 struct Context {
     /// Kubernetes client
@@ -371,44 +408,6 @@ impl Context {
         Ok(tunnel)
     }
 
-    async fn sync_tunnel_dns_records(
-        &self,
-        desired_dns_records: &HashSet<(String, String)>,
-        zone_dns_list: &HashMap<String, Vec<DnsRecord>>,
-        tunnel_id: &str,
-    ) -> Result<()> {
-        let cname_content = tunnel_cname(tunnel_id);
-        let mut current_cname_records =
-            collect_current_cname_records(zone_dns_list, &cname_content);
-
-        for (hostname, zone_id) in desired_dns_records {
-            let dns_records = zone_dns_list
-                .get(zone_id)
-                .ok_or_else(Error::illegal_document)?;
-
-            if let Some(dns_record_id) = matching_hostname_cname_record(
-                dns_records.iter().map(dns_record_ref),
-                hostname,
-                &cname_content,
-            )? {
-                current_cname_records.remove(&(dns_record_id.to_string(), zone_id.clone()));
-                continue;
-            }
-
-            self.cloudflare_api
-                .create_dns_cname(zone_id.as_str(), tunnel_id, hostname.as_str())
-                .await?;
-        }
-
-        for (dns_id, zone_id) in current_cname_records {
-            self.cloudflare_api
-                .delete_dns_cname(zone_id.as_str(), dns_id.as_str())
-                .await?;
-        }
-
-        Ok(())
-    }
-
     async fn reconcile_tunnel(
         &self,
         cfdt: CloudflaredTunnel,
@@ -460,7 +459,7 @@ impl Context {
             )
             .await?;
         let tunnel_id = tunnel.id.as_hyphenated().to_string();
-        self.sync_tunnel_dns_records(&dns_list, &zone_dns_list, &tunnel_id)
+        sync_tunnel_dns_records(&self.cloudflare_api, &dns_list, &zone_dns_list, &tunnel_id)
             .await?;
 
         let (tunnel_config_secret_name, secret_updated) = self
@@ -628,8 +627,17 @@ impl Context {
 mod tests {
     use super::*;
     use cloudflare::endpoints::zones::zone::Zone;
+    use cloudflare::framework::{
+        Environment,
+        auth::Credentials,
+        client::{ClientConfig, async_api::Client as HttpApiClient},
+    };
+
     use serde_json::json;
     use serde_yaml::Value;
+
+    const ZONE_ID: &str = "00000000000000000000000000000001";
+    const STALE_DNS_ID: &str = "00000000000000000000000000000002";
 
     #[test]
     fn best_matching_zone_id_matches_zone_apex() {
@@ -800,6 +808,44 @@ mod tests {
         assert_eq!(yaml["ingress"][1]["service"], "http_status:404");
     }
 
+    async fn create_cloudflare_api(url: &str) -> CloudflareApi {
+        let api = HttpApiClient::new(
+            Credentials::UserAuthToken {
+                token: "DEADBEAF".to_string(),
+            },
+            ClientConfig::default(),
+            Environment::Custom(url.to_string()),
+        )
+        .expect("client should build");
+
+        CloudflareApi::new(Arc::new(api))
+    }
+
+    fn dns_record(id: &str, name: &str, content: &str) -> DnsRecord {
+        serde_json::from_value(json!({
+            "id": id,
+            "zone_id": ZONE_ID,
+            "zone_name": "example.com",
+            "name": name,
+            "type": "CNAME",
+            "content": content,
+            "proxiable": true,
+            "proxied": true,
+            "ttl": 1,
+            "settings": {},
+            "meta": {
+                "auto_added": false,
+                "managed_by_apps": false,
+                "managed_by_argo_tunnel": false
+            },
+            "comment": null,
+            "tags": [],
+            "created_on": "2000-01-01T00:00:00.000000Z",
+            "modified_on": "2000-01-01T00:00:00.000000Z"
+        }))
+        .expect("dns record should deserialize")
+    }
+
     #[test]
     fn matching_hostname_cname_record_returns_the_matching_record_id() {
         let other_content = DnsContent::CNAME {
@@ -905,5 +951,69 @@ mod tests {
         );
 
         assert!(matches!(result, Err(Error::IllegalDocument { .. })));
+    }
+
+    #[tokio::test]
+    async fn sync_tunnel_dns_records_keeps_matching_records_without_api_calls() {
+        let server = mockito::Server::new_async().await;
+        let api = create_cloudflare_api(server.url().as_str()).await;
+        let tunnel_id = "a0000000000000000000000000000002";
+        let tunnel_target = tunnel_cname(tunnel_id);
+        let desired_dns_records =
+            HashSet::from([("app.example.com".to_string(), ZONE_ID.to_string())]);
+        let zone_dns_list = HashMap::from([(
+            ZONE_ID.to_string(),
+            vec![dns_record("dns-1", "app.example.com", &tunnel_target)],
+        )]);
+
+        sync_tunnel_dns_records(&api, &desired_dns_records, &zone_dns_list, tunnel_id)
+            .await
+            .expect("matching records should not require API changes");
+    }
+
+    #[tokio::test]
+    async fn sync_tunnel_dns_records_creates_missing_records_and_deletes_stale_ones() {
+        let mut server = mockito::Server::new_async().await;
+        let tunnel_id = "a0000000000000000000000000000002";
+        let tunnel_target = tunnel_cname(tunnel_id);
+        let create_dns_mock = server
+            .mock("POST", format!("/zones/{ZONE_ID}/dns_records").as_str())
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(
+                r#"{"result":{"id":"created-record","zone_id":"00000000000000000000000000000001","zone_name":"example.com","name":"app.example.com","type":"CNAME","content":"a0000000000000000000000000000002.cfargotunnel.com","proxiable":true,"proxied":true,"ttl":1,"settings":{},"meta":{"auto_added":false,"managed_by_apps":false,"managed_by_argo_tunnel":false},"comment":null,"tags":[],"created_on":"2000-01-01T00:00:00.000000Z","modified_on":"2000-01-01T00:00:00.000000Z"},"result_info":{},"success":true,"errors":[],"messages":[]}"#,
+            )
+            .create_async()
+            .await;
+        let delete_dns_mock = server
+            .mock(
+                "DELETE",
+                format!("/zones/{ZONE_ID}/dns_records/{STALE_DNS_ID}").as_str(),
+            )
+            .with_status(201)
+            .with_header("content-type", "application/json")
+            .with_body(
+                r#"{"result":{"id":"00000000000000000000000000000001"},"result_info":{},"success":true,"errors":[],"messages":[]}"#,
+            )
+            .create_async()
+            .await;
+        let api = create_cloudflare_api(server.url().as_str()).await;
+        let desired_dns_records =
+            HashSet::from([("app.example.com".to_string(), ZONE_ID.to_string())]);
+        let zone_dns_list = HashMap::from([(
+            ZONE_ID.to_string(),
+            vec![dns_record(
+                STALE_DNS_ID,
+                "stale.example.com",
+                &tunnel_target,
+            )],
+        )]);
+
+        sync_tunnel_dns_records(&api, &desired_dns_records, &zone_dns_list, tunnel_id)
+            .await
+            .expect("missing and stale records should be reconciled");
+
+        create_dns_mock.assert_async().await;
+        delete_dns_mock.assert_async().await;
     }
 }
