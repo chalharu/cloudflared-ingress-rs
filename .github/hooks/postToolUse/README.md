@@ -10,8 +10,8 @@ Copilot CLI の `postToolUse` hook をこのリポジトリ向けに最適化し
 
 この構成により、`postToolUse` が複数コマンドへ分かれている場合に発生するプロセス起動、stdin 解析、Git 差分取得の重複を避けられます。dirty な対象ファイルは `.git/.copilot-hooks/post-tool-use-state.json` の署名と比較し、今回変わったものだけを処理します。pipeline は上から評価され、各ファイルは最初にマッチした pipeline にだけ割り当てられます。matcher は regex 配列のみを受け付け、内部では `|` で結合した 1 つの `RegExp` として扱います。
 
-Markdown は `markdownlint-cli2 --fix` → 再lint、JS/TS 系 (`.js`, `.mjs`, `.cjs`, `.jsx`, `.ts`, `.mts`, `.cts`, `.tsx`) は `Biome check --write` → `Oxlint --fix` → `Biome check --write` → 再check、Python は `ruff format` → `ruff check --fix` → `ruff format` → `ruff check` の順で動きます。Rust は `.rs` の変更をトリガーに `cargo fmt --all` と `cargo clippy --fix --allow-dirty --allow-staged --workspace --all-targets` を実行し、Dockerfile は `hadolint` で検査します。自動修正で解決した内容は表示せず、fix 後も残った違反だけを表示します。
+Markdown は `markdownlint-cli2 --fix` → 再lint、JS/TS 系 (`.js`, `.mjs`, `.cjs`, `.jsx`, `.ts`, `.mts`, `.cts`, `.tsx`) は `Biome check --write` → `Oxlint --fix` → `Biome check --write` → 再check、Python は `ruff format` → `ruff check --fix` → `ruff format` → `ruff check` の順で動きます。Rust は `.rs` の変更をトリガーに `podman run --rm -i docker.io/rust:1.94.0-bookworm ... cargo fmt --all` と `... cargo clippy --fix --allow-dirty --allow-staged --workspace --all-targets` を実行し、初回だけ Git 管理ディレクトリ配下の `.copilot-hooks/podman-rustup` / `.copilot-hooks/podman-cargo` cache を bootstrap します。Dockerfile は `hadolint` で検査します。自動修正で解決した内容は表示せず、fix 後も残った違反だけを表示します。
 
 各 step はローカル CLI を優先し、必要なら別ツールや `npx` 実行へ順に fallback できます。たとえば JS/TS lint は `oxlint -> eslint -> eslint-npx -> oxlint-npx` の順で試せるようにしています。
 
-フック自体を変更したときは、`node --test .github/hooks/postToolUse/main.test.mjs` で回帰確認を行ってください。`.github/hooks/hooks.json` の timeout は Rust の `cargo clippy` まで許容できるよう 90 秒に設定しています。
+フック自体を変更したときは、`node --test .github/hooks/postToolUse/main.test.mjs` で回帰確認を行ってください。`.github/hooks/hooks.json` の timeout は Podman image 初回 bootstrap と Rust の `cargo clippy` まで許容できるよう 300 秒に設定しています。
