@@ -1,0 +1,335 @@
+{
+  "tools": [
+    {
+      "id": "markdownlint-fix",
+      "command": "markdownlint-cli2",
+      "args": [
+        "--fix"
+      ]
+    },
+    {
+      "id": "markdownlint-fix-npx",
+      "command": "npx",
+      "args": [
+        "--yes",
+        "markdownlint-cli2",
+        "--fix"
+      ]
+    },
+    {
+      "id": "markdownlint-check",
+      "command": "markdownlint-cli2",
+      "args": []
+    },
+    {
+      "id": "markdownlint-check-npx",
+      "command": "npx",
+      "args": [
+        "--yes",
+        "markdownlint-cli2"
+      ]
+    },
+    {
+      "id": "biome-check-write",
+      "command": "biome",
+      "args": [
+        "check",
+        "--write"
+      ]
+    },
+    {
+      "id": "biome-check-write-npx",
+      "command": "npx",
+      "args": [
+        "--yes",
+        "@biomejs/biome",
+        "check",
+        "--write"
+      ]
+    },
+    {
+      "id": "biome-check",
+      "command": "biome",
+      "args": [
+        "check"
+      ]
+    },
+    {
+      "id": "biome-check-npx",
+      "command": "npx",
+      "args": [
+        "--yes",
+        "@biomejs/biome",
+        "check"
+      ]
+    },
+    {
+      "id": "oxlint-fix",
+      "command": "oxlint",
+      "args": [
+        "--fix"
+      ]
+    },
+    {
+      "id": "oxlint-fix-npx",
+      "command": "npx",
+      "args": [
+        "--yes",
+        "oxlint",
+        "--fix"
+      ]
+    },
+    {
+      "id": "oxlint-check",
+      "command": "oxlint",
+      "args": []
+    },
+    {
+      "id": "oxlint-check-npx",
+      "command": "npx",
+      "args": [
+        "--yes",
+        "oxlint"
+      ]
+    },
+    {
+      "id": "eslint-fix",
+      "command": "eslint",
+      "args": [
+        "--fix"
+      ]
+    },
+    {
+      "id": "eslint-fix-npx",
+      "command": "npx",
+      "args": [
+        "--yes",
+        "eslint",
+        "--fix"
+      ]
+    },
+    {
+      "id": "eslint-check",
+      "command": "eslint",
+      "args": []
+    },
+    {
+      "id": "eslint-check-npx",
+      "command": "npx",
+      "args": [
+        "--yes",
+        "eslint"
+      ]
+    },
+    {
+      "id": "ruff-format",
+      "command": "ruff",
+      "args": [
+        "format"
+      ]
+    },
+    {
+      "id": "ruff-check-fix",
+      "command": "ruff",
+      "args": [
+        "check",
+        "--fix"
+      ]
+    },
+    {
+      "id": "ruff-check",
+      "command": "ruff",
+      "args": [
+        "check"
+      ]
+    },
+    {
+      "id": "cargo-fmt",
+      "command": "cargo",
+      "args": [
+        "fmt",
+        "--all"
+      ],
+      "appendFiles": false
+    },
+    {
+      "id": "cargo-clippy-fix",
+      "command": "cargo",
+      "args": [
+        "clippy",
+        "--fix",
+        "--allow-dirty",
+        "--allow-staged",
+        "--workspace",
+        "--all-targets"
+      ],
+      "appendFiles": false
+    },
+    {
+      "id": "cargo-clippy-check",
+      "command": "cargo",
+      "args": [
+        "clippy",
+        "--workspace",
+        "--all-targets",
+        "--",
+        "-D",
+        "warnings"
+      ],
+      "appendFiles": false
+    },
+    {
+      "id": "hadolint-check",
+      "command": "hadolint",
+      "args": []
+    }
+  ],
+  "pipelines": [
+    {
+      "id": "markdown",
+      "matcher": [
+        "\\.(?:md|markdown)$"
+      ],
+      "steps": [
+        {
+          "tools": [
+            "markdownlint-fix",
+            "markdownlint-fix-npx"
+          ]
+        },
+        {
+          "tools": [
+            "markdownlint-check",
+            "markdownlint-check-npx"
+          ],
+          "reportFailure": true,
+          "failureLabel": "Markdown linter reported unresolved issues:"
+        }
+      ]
+    },
+    {
+      "id": "scripts",
+      "matcher": [
+        "\\.(?:[cm]?[jt]s|[jt]sx)$"
+      ],
+      "steps": [
+        {
+          "tools": [
+            "biome-check-write",
+            "biome-check-write-npx"
+          ]
+        },
+        {
+          "tools": [
+            "oxlint-fix",
+            "eslint-fix",
+            "eslint-fix-npx",
+            "oxlint-fix-npx"
+          ]
+        },
+        {
+          "tools": [
+            "biome-check-write",
+            "biome-check-write-npx"
+          ]
+        },
+        {
+          "tools": [
+            "biome-check",
+            "biome-check-npx"
+          ],
+          "reportFailure": true,
+          "failureLabel": "Biome reported unresolved issues:"
+        },
+        {
+          "tools": [
+            "oxlint-check",
+            "eslint-check",
+            "eslint-check-npx",
+            "oxlint-check-npx"
+          ],
+          "reportFailure": true,
+          "failureLabel": "JavaScript/TypeScript linter reported unresolved issues:"
+        }
+      ]
+    },
+    {
+      "id": "python",
+      "matcher": [
+        "\\.(?:py|pyi|pyw)$"
+      ],
+      "steps": [
+        {
+          "tools": [
+            "ruff-format"
+          ]
+        },
+        {
+          "tools": [
+            "ruff-check-fix"
+          ]
+        },
+        {
+          "tools": [
+            "ruff-format"
+          ]
+        },
+        {
+          "tools": [
+            "ruff-check"
+          ],
+          "reportFailure": true,
+          "failureLabel": "Ruff reported unresolved issues:"
+        }
+      ]
+    },
+    {
+      "id": "rust",
+      "matcher": [
+        "\\.rs$"
+      ],
+      "steps": [
+        {
+          "tools": [
+            "cargo-fmt"
+          ],
+          "reportFailure": true,
+          "failureLabel": "cargo fmt reported unresolved issues:"
+        },
+        {
+          "tools": [
+            "cargo-clippy-fix"
+          ]
+        },
+        {
+          "tools": [
+            "cargo-fmt"
+          ]
+        },
+        {
+          "tools": [
+            "cargo-clippy-check"
+          ],
+          "reportFailure": true,
+          "failureLabel": "Rust linter reported unresolved issues:"
+        }
+      ]
+    },
+    {
+      "id": "dockerfile",
+      "matcher": [
+        "(?:^|/)Dockerfile(?:\\.[^/]+)?$",
+        "(?:^|/)[^/]+\\.Dockerfile$"
+      ],
+      "steps": [
+        {
+          "tools": [
+            "hadolint-check"
+          ],
+          "reportFailure": true,
+          "failureLabel": "Hadolint reported unresolved issues:"
+        }
+      ]
+    }
+  ]
+}
