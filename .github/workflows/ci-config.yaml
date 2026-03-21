@@ -36,6 +36,6 @@ jobs:
       - name: Set up Node.js
         uses: actions/setup-node@v6
         with:
-          node-version: '22'
+          node-version: '24'
       - name: Validate Renovate config
         run: npx --yes --package renovate renovate-config-validator renovate.json
