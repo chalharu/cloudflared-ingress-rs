@@ -71,6 +71,8 @@ repo_root="$(git rev-parse --show-toplevel 2>/dev/null || true)"
 sccache_version="${SCCACHE_VERSION:-0.14.0}"
 sccache_release_base_url="${SCCACHE_RELEASE_BASE_URL:-https://github.com/mozilla/sccache/releases/download}"
 sccache_bootstrap_jobs="${SCCACHE_BOOTSTRAP_JOBS:-1}"
+cargo_llvm_cov_version="${CARGO_LLVM_COV_VERSION:-0.8.5}"
+cargo_llvm_cov_release_base_url="${CARGO_LLVM_COV_RELEASE_BASE_URL:-https://github.com/taiki-e/cargo-llvm-cov/releases}"
 rustup_cache="$(git -C "${repo_root}" rev-parse --git-path .copilot-cache/podman-rustup)"
 cargo_cache="$(git -C "${repo_root}" rev-parse --git-path .copilot-cache/podman-cargo)"
 target_cache="$(git -C "${repo_root}" rev-parse --git-path .copilot-cache/podman-target)"
@@ -81,6 +83,11 @@ sccache_cache="$(git -C "${repo_root}" rev-parse --git-path .copilot-cache/podma
 [[ "${sccache_cache}" == /* ]] || sccache_cache="${repo_root}/${sccache_cache}"
 
 mkdir -p "${rustup_cache}" "${cargo_cache}" "${target_cache}" "${sccache_cache}"
+
+enable_cargo_llvm_cov=0
+if [[ "${#cmd[@]}" -ge 2 && "${cmd[0]}" == "cargo" && "${cmd[1]}" == "llvm-cov" ]]; then
+  enable_cargo_llvm_cov=1
+fi
 
 bootstrap_toolchain() {
   if [[ -x "${cargo_cache}/bin/cargo" ]]; then
@@ -99,6 +106,9 @@ ensure_tools() {
     -e SCCACHE_VERSION="${sccache_version}" \
     -e SCCACHE_RELEASE_BASE_URL="${sccache_release_base_url}" \
     -e SCCACHE_BOOTSTRAP_JOBS="${sccache_bootstrap_jobs}" \
+    -e CARGO_LLVM_COV_VERSION="${cargo_llvm_cov_version}" \
+    -e CARGO_LLVM_COV_RELEASE_BASE_URL="${cargo_llvm_cov_release_base_url}" \
+    -e ENABLE_CARGO_LLVM_COV="${enable_cargo_llvm_cov}" \
     -v "${repo_root}:/workspace" \
     -w /workspace \
     -v "${rustup_cache}:/usr/local/rustup" \
@@ -114,6 +124,11 @@ ensure_tools() {
       cargo clippy --version >/dev/null 2>&1 || rustup component add clippy >/tmp/clippy.log 2>&1
       cargo clippy --version >/dev/null 2>&1 || { cat /tmp/clippy.log >&2; exit 1; }
       sh .github/skills/containerized-rust-ops/scripts/install-sccache.sh
+      if [ "${ENABLE_CARGO_LLVM_COV:-0}" = "1" ]; then
+        sh .github/skills/containerized-rust-ops/scripts/install-cargo-llvm-cov.sh
+        rustup component list --installed | grep -Eq "^llvm-tools" || rustup component add llvm-tools-preview >/tmp/llvm-tools.log 2>&1
+        rustup component list --installed | grep -Eq "^llvm-tools" || { cat /tmp/llvm-tools.log >&2; exit 1; }
+      fi
     '
 }
 

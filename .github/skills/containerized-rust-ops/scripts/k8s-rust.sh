@@ -77,6 +77,9 @@ repo_root="$(git rev-parse --show-toplevel 2>/dev/null || true)"
 install_sccache_script_path="${repo_root}/.github/skills/containerized-rust-ops/scripts/install-sccache.sh"
 [[ -f "${install_sccache_script_path}" ]] || die "install-sccache.sh not found: ${install_sccache_script_path}"
 install_sccache_script="$(cat "${install_sccache_script_path}")"
+install_cargo_llvm_cov_script_path="${repo_root}/.github/skills/containerized-rust-ops/scripts/install-cargo-llvm-cov.sh"
+[[ -f "${install_cargo_llvm_cov_script_path}" ]] || die "install-cargo-llvm-cov.sh not found: ${install_cargo_llvm_cov_script_path}"
+install_cargo_llvm_cov_script="$(cat "${install_cargo_llvm_cov_script_path}")"
 
 repo_name="$(basename "${repo_root}")"
 branch="${K8S_RUST_BRANCH:-$(git branch --show-current)}"
@@ -89,6 +92,12 @@ namespace="${CONTROL_PLANE_K8S_NAMESPACE:-}"
 sccache_version="${SCCACHE_VERSION:-0.14.0}"
 sccache_release_base_url="${SCCACHE_RELEASE_BASE_URL:-https://github.com/mozilla/sccache/releases/download}"
 sccache_bootstrap_jobs="${SCCACHE_BOOTSTRAP_JOBS:-1}"
+cargo_llvm_cov_version="${CARGO_LLVM_COV_VERSION:-0.8.5}"
+cargo_llvm_cov_release_base_url="${CARGO_LLVM_COV_RELEASE_BASE_URL:-https://github.com/taiki-e/cargo-llvm-cov/releases}"
+enable_cargo_llvm_cov=0
+if [[ "${#cmd[@]}" -ge 2 && "${cmd[0]}" == "cargo" && "${cmd[1]}" == "llvm-cov" ]]; then
+  enable_cargo_llvm_cov=1
+fi
 
 branch_key="$(slugify "${branch}")"
 repo_key="$(slugify "${repo_name}")"
@@ -115,6 +124,9 @@ branch_key_q="$(printf '%q' "${branch_key}")"
 sccache_version_q="$(printf '%q' "${sccache_version}")"
 sccache_release_base_url_q="$(printf '%q' "${sccache_release_base_url}")"
 sccache_bootstrap_jobs_q="$(printf '%q' "${sccache_bootstrap_jobs}")"
+cargo_llvm_cov_version_q="$(printf '%q' "${cargo_llvm_cov_version}")"
+cargo_llvm_cov_release_base_url_q="$(printf '%q' "${cargo_llvm_cov_release_base_url}")"
+enable_cargo_llvm_cov_q="$(printf '%q' "${enable_cargo_llvm_cov}")"
 
 job_script="$(cat <<EOF
 set -eu
@@ -125,6 +137,9 @@ branch_key=${branch_key_q}
 sccache_version=${sccache_version_q}
 sccache_release_base_url=${sccache_release_base_url_q}
 sccache_bootstrap_jobs=${sccache_bootstrap_jobs_q}
+cargo_llvm_cov_version=${cargo_llvm_cov_version_q}
+cargo_llvm_cov_release_base_url=${cargo_llvm_cov_release_base_url_q}
+enable_cargo_llvm_cov=${enable_cargo_llvm_cov_q}
 workspace_root=/workspace
 src_root="\${workspace_root}/src/\${repo_key}/\${branch_key}"
 cache_root="\${workspace_root}/cache/\${repo_key}/\${branch_key}"
@@ -154,6 +169,10 @@ cat > /tmp/install-sccache.sh <<'INSTALL_SCCACHE'
 ${install_sccache_script}
 INSTALL_SCCACHE
 chmod 0755 /tmp/install-sccache.sh
+cat > /tmp/install-cargo-llvm-cov.sh <<'INSTALL_CARGO_LLVM_COV'
+${install_cargo_llvm_cov_script}
+INSTALL_CARGO_LLVM_COV
+chmod 0755 /tmp/install-cargo-llvm-cov.sh
 rustfmt --version >/dev/null 2>&1 || rustup component add rustfmt >/tmp/rustfmt.log 2>&1
 rustfmt --version >/dev/null 2>&1 || { cat /tmp/rustfmt.log >&2; exit 1; }
 cargo clippy --version >/dev/null 2>&1 || rustup component add clippy >/tmp/clippy.log 2>&1
@@ -162,6 +181,13 @@ export SCCACHE_VERSION="\${sccache_version}"
 export SCCACHE_RELEASE_BASE_URL="\${sccache_release_base_url}"
 export SCCACHE_BOOTSTRAP_JOBS="\${sccache_bootstrap_jobs}"
 sh /tmp/install-sccache.sh
+if [ "\${enable_cargo_llvm_cov}" = "1" ]; then
+  export CARGO_LLVM_COV_VERSION="\${cargo_llvm_cov_version}"
+  export CARGO_LLVM_COV_RELEASE_BASE_URL="\${cargo_llvm_cov_release_base_url}"
+  sh /tmp/install-cargo-llvm-cov.sh
+  rustup component list --installed | grep -Eq "^llvm-tools" || rustup component add llvm-tools-preview >/tmp/llvm-tools.log 2>&1
+  rustup component list --installed | grep -Eq "^llvm-tools" || { cat /tmp/llvm-tools.log >&2; exit 1; }
+fi
 export RUSTC_WRAPPER="\${CARGO_HOME}/bin/sccache"
 if "\$@"; then
   status=0
