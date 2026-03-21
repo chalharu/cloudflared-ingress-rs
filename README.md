@@ -147,6 +147,8 @@ bash .github/skills/containerized-rust-ops/scripts/podman-rust.sh test
 bash .github/skills/containerized-rust-ops/scripts/podman-rust.sh clippy
 ```
 
+GitHub Actions also runs SonarQube Cloud analysis via `.github/workflows/sonarqube-cloud.yaml`. That workflow targets the checked-in `chalharu_cloudflared-ingress-rs` project and expects the `SONAR_TOKEN` repository secret to remain configured.
+
 Contribution conventions are documented in `CONTRIBUTING.md`.
 
 ## Deployment assets
