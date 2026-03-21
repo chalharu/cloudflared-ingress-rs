@@ -172,7 +172,8 @@ fn resolve_service_port(
 }
 
 fn build_service_url(scheme: &str, service_name: &str, port: Option<i32>) -> String {
-    match port.filter(|port| !(*port == 80 && scheme == "http" || *port == 443 && scheme == "https"))
+    match port
+        .filter(|port| !(*port == 80 && scheme == "http" || *port == 443 && scheme == "https"))
     {
         Some(port) => format!("{scheme}://{service_name}:{port}"),
         None => format!("{scheme}://{service_name}"),
@@ -305,8 +306,7 @@ impl Context {
     ) -> Result<()> {
         const SERVERSSCHEME_ANNOTATION: &str =
             "cloudflared-ingress.ingress.kubernetes.io/service.serversscheme";
-        const ACCESS_AUD_ANNOTATION: &str =
-            "cloudflared-ingress.ingress.kubernetes.io/service.aud";
+        const ACCESS_AUD_ANNOTATION: &str = "cloudflared-ingress.ingress.kubernetes.io/service.aud";
         const ACCESS_TEAM_ANNOTATION: &str =
             "cloudflared-ingress.ingress.kubernetes.io/service.team";
 
@@ -350,13 +350,16 @@ impl Context {
                 continue;
             };
 
-            let default_backend = spec.default_backend.as_ref().map(|backend| HTTPIngressRuleValue {
-                paths: vec![HTTPIngressPath {
-                    backend: backend.clone(),
-                    path: None,
-                    path_type: "ImplementationSpecific".to_string(),
-                }],
-            });
+            let default_backend =
+                spec.default_backend
+                    .as_ref()
+                    .map(|backend| HTTPIngressRuleValue {
+                        paths: vec![HTTPIngressPath {
+                            backend: backend.clone(),
+                            path: None,
+                            path_type: "ImplementationSpecific".to_string(),
+                        }],
+                    });
 
             let origin_request = team_name
                 .map(|t| CloudflaredTunnelOriginRequest {
@@ -509,8 +512,14 @@ mod tests {
             }),
         };
 
-        assert_eq!(resolve_service_port(&named, "default", &services), Some(8443));
-        assert_eq!(resolve_service_port(&numeric, "default", &services), Some(8080));
+        assert_eq!(
+            resolve_service_port(&named, "default", &services),
+            Some(8443)
+        );
+        assert_eq!(
+            resolve_service_port(&numeric, "default", &services),
+            Some(8080)
+        );
     }
 
     #[test]

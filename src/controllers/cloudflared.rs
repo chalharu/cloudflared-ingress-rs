@@ -261,10 +261,11 @@ impl Context {
         for ingress in cfdt.spec.ingress.as_ref().iter().flat_map(|x| x.iter()) {
             let Some(zone_id) = best_matching_zone_id(
                 &ingress.hostname,
-                zones.iter().map(|zone| (zone.name.as_str(), zone.id.as_str())),
+                zones
+                    .iter()
+                    .map(|zone| (zone.name.as_str(), zone.id.as_str())),
             )
-            .map(str::to_string)
-            else {
+            .map(str::to_string) else {
                 // hostnameがzoneに当てはまらない場合
                 return Err(Error::illegal_document());
             };
@@ -551,10 +552,7 @@ mod tests {
         assert_eq!(
             best_matching_zone_id(
                 "api.eu.example.com",
-                [
-                    ("example.com", "zone-a"),
-                    ("eu.example.com", "zone-b"),
-                ],
+                [("example.com", "zone-a"), ("eu.example.com", "zone-b"),],
             ),
             Some("zone-b")
         );
