@@ -1,4 +1,4 @@
-FROM alpine:3.22 AS rust-base
+FROM alpine:3.23 AS rust-base
 
 ARG RUST_VERSION=1.94.0
 
