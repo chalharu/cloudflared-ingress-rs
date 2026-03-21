@@ -4,7 +4,7 @@ mod cli;
 mod controllers;
 mod error;
 
-use actix_web::{App, HttpRequest, HttpResponse, HttpServer, Responder, get, middleware};
+use actix_web::{App, HttpRequest, HttpResponse, HttpServer, Responder, get, middleware, web};
 use clap::Parser as _;
 use cli::{Cli, Commands};
 use kube::CustomResourceExt as _;
@@ -20,6 +20,10 @@ async fn health(_: HttpRequest) -> impl Responder {
 #[get("/")]
 async fn index(_req: HttpRequest) -> impl Responder {
     HttpResponse::Ok()
+}
+
+fn configure_app(cfg: &mut web::ServiceConfig) {
+    cfg.service(index).service(health);
 }
 
 #[allow(clippy::result_large_err)]
@@ -72,8 +76,7 @@ async fn run_server() -> Result<(), std::io::Error> {
     let server = HttpServer::new(move || {
         App::new()
             .wrap(middleware::Logger::default().exclude("/health"))
-            .service(index)
-            .service(health)
+            .configure(configure_app)
     })
     .bind("0.0.0.0:8080")?
     .workers(2)
@@ -85,6 +88,34 @@ async fn run_server() -> Result<(), std::io::Error> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use actix_web::{App, http::StatusCode, test as actix_test};
+
+    #[actix_web::test]
+    async fn configure_app_registers_health_endpoint() {
+        let app = actix_test::init_service(App::new().configure(configure_app)).await;
+        let response = actix_test::call_service(
+            &app,
+            actix_test::TestRequest::get().uri("/health").to_request(),
+        )
+        .await;
+
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(
+            actix_test::read_body(response).await.as_ref(),
+            br#""healthy""#
+        );
+    }
+
+    #[actix_web::test]
+    async fn configure_app_registers_index_endpoint() {
+        let app = actix_test::init_service(App::new().configure(configure_app)).await;
+        let response =
+            actix_test::call_service(&app, actix_test::TestRequest::get().uri("/").to_request())
+                .await;
+
+        assert_eq!(response.status(), StatusCode::OK);
+        assert!(actix_test::read_body(response).await.is_empty());
+    }
 
     #[test]
     fn combine_run_results_returns_the_first_controller_error() {
@@ -106,5 +137,12 @@ mod tests {
             combine_run_results(Ok(()), Ok(()), Err(std::io::Error::other("server failure")));
 
         assert!(matches!(result, Err(Error::IoError { .. })));
+    }
+
+    #[test]
+    fn combine_run_results_returns_ok_when_all_tasks_succeed() {
+        let result = combine_run_results(Ok(()), Ok(()), Ok(()));
+
+        assert!(result.is_ok());
     }
 }
