@@ -1,0 +1,24 @@
+name: Copilot hooks
+
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - '.github/hooks/**'
+      - '.github/workflows/copilot-hooks.yaml'
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Run hook regression tests
+        run: node --test .github/hooks/postToolUse/main.test.mjs
