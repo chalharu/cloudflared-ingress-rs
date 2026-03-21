@@ -102,7 +102,7 @@ pub(super) async fn patch_opaque_secret(
         )
         .await?;
 
-    Ok(!before.is_some_and(|b| b.metadata.resource_version == patched.metadata.resource_version))
+    Ok(before.is_none_or(|b| b.metadata.resource_version != patched.metadata.resource_version))
 }
 
 pub(super) async fn restart_deployment(
@@ -211,5 +211,5 @@ pub(super) async fn patch_deployment(
         )
         .await?;
 
-    Ok(!before.is_some_and(|b| b.metadata.generation == patched.metadata.generation))
+    Ok(before.is_none_or(|b| b.metadata.generation != patched.metadata.generation))
 }
