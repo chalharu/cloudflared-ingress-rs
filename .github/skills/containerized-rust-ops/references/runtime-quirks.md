@@ -18,7 +18,7 @@
 - `k8s-rust.sh` injects its local `install-sccache.sh` into the job so bootstrap changes can be validated before push, but the Rust source build/test still runs against the pushed branch clone.
 - The default `control-plane-run` job limit is `2Gi` memory here. First-time `cargo install --locked sccache` can be OOM-killed unless it is serialized with `CARGO_BUILD_JOBS=1` (or `SCCACHE_BOOTSTRAP_JOBS=1` when using `k8s-rust.sh`).
 - The helper scripts now prefer prebuilt `sccache` release tarballs from `https://github.com/mozilla/sccache/releases/`. `SCCACHE_VERSION` and `SCCACHE_RELEASE_BASE_URL` can override the download source, and unsupported architectures still fall back to serialized `cargo install --locked sccache`.
-- For `cargo llvm-cov`, do not use `cargo install`. Use `.github/skills/containerized-rust-ops/scripts/install-cargo-llvm-cov.sh`, which downloads the prebuilt binary from `https://github.com/taiki-e/cargo-llvm-cov/releases/`. `CARGO_LLVM_COV_VERSION`, `CARGO_LLVM_COV_RELEASE_BASE_URL`, and `CARGO_LLVM_COV_ARCHIVE_URL` can override the source.
+- For `cargo llvm-cov`, do not use `cargo install`. Use `.github/skills/containerized-rust-ops/scripts/install-cargo-llvm-cov.sh`, which downloads the prebuilt binary from `https://github.com/taiki-e/cargo-llvm-cov/releases/`. `CARGO_LLVM_COV_VERSION`, `CARGO_LLVM_COV_RELEASE_BASE_URL`, and `CARGO_LLVM_COV_ARCHIVE_URL` can override the source, but non-default archives or versions must also set `CARGO_LLVM_COV_ARCHIVE_SHA256`.
 
 ## Cache layout
 

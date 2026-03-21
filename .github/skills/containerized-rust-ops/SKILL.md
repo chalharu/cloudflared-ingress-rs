@@ -12,7 +12,7 @@ Use the bundled scripts instead of rebuilding Podman or `control-plane-run` comm
 1. Need local lint, check, clippy, build, or test against the current worktree? Run `scripts/podman-rust.sh`.
 2. Need a long-running build or test on the control plane? Run `scripts/k8s-rust.sh`.
 3. Need to understand why a containerized run is behaving strangely? Read `references/runtime-quirks.md` before changing the commands.
-4. Need `cargo llvm-cov`? Use the bundled release-bootstrap path instead of `cargo install`; the helper scripts install `cargo-llvm-cov` from GitHub releases when you invoke `cargo llvm-cov`.
+4. Need `cargo llvm-cov`? Use the bundled release-bootstrap path instead of `cargo install`; the helper scripts install `cargo-llvm-cov` from GitHub releases when you invoke `cargo llvm-cov`, and custom archives/versions must provide `CARGO_LLVM_COV_ARCHIVE_SHA256`.
 
 ## Run local Podman validation
 
