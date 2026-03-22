@@ -35,9 +35,19 @@ jobs:
         run: helm lint ./helm --strict
       - name: Render chart
         run: helm template cloudflared-ingress ./helm --namespace cloudflared-ingress-system >/tmp/cloudflared-ingress-rendered.yaml
-      - name: Verify dev chart defaults to the latest image tag
+      - name: Determine expected default image tag
+        id: expected-default-image
         run: |
-          grep -F 'image: "ghcr.io/chalharu/cloudflared-ingress-rs:latest"' /tmp/cloudflared-ingress-rendered.yaml
+          app_version="$(sed -n 's/^appVersion:[[:space:]]*//p' helm/Chart.yaml | tr -d '"')"
+          if [[ "${app_version}" == *-dev* ]]; then
+            expected_tag=latest
+          else
+            expected_tag="${app_version}"
+          fi
+          echo "tag=${expected_tag}" >> "${GITHUB_OUTPUT}"
+      - name: Verify checked-out chart defaults to the expected image tag
+        run: |
+          grep -F "image: \"ghcr.io/chalharu/cloudflared-ingress-rs:${{ steps.expected-default-image.outputs.tag }}\"" /tmp/cloudflared-ingress-rendered.yaml
       - name: Verify explicit image tag override
         run: |
           helm template cloudflared-ingress ./helm \
@@ -100,25 +110,42 @@ jobs:
           install_kind() {
             local binary_path="${kind_dir}/kind"
             local download_path="${kind_dir}/kind-linux-${arch}"
-            local checksum_path="${download_path}.sha256sum"
+            local release_metadata
+            local expected_checksum
 
             [ -x "${binary_path}" ] && return 0
 
+            release_metadata="$(
+              curl --fail --show-error --silent --location \
+                --retry 3 --retry-all-errors \
+                "https://api.github.com/repos/kubernetes-sigs/kind/releases/tags/${KIND_VERSION}"
+            )"
+            expected_checksum="$(
+              printf '%s' "${release_metadata}" | node -p '
+                const fs = require("fs");
+                const assetName = process.argv[1];
+                const release = JSON.parse(fs.readFileSync(0, "utf8"));
+                const asset = (release.assets || []).find(({ name }) => name === assetName);
+                if (!asset || !asset.digest) {
+                  process.exit(1);
+                }
+                asset.digest.replace(/^sha256:/, "");
+              ' "kind-linux-${arch}"
+            )" || {
+              echo "Failed to resolve checksum for kind ${KIND_VERSION} (${arch})" >&2
+              exit 1
+            }
+
             for attempt in 1 2 3; do
-              rm -f "${download_path}" "${checksum_path}"
+              rm -f "${download_path}"
               curl --fail --show-error --silent --location \
                 --retry 3 --retry-all-errors \
                 -o "${download_path}" \
                 "https://github.com/kubernetes-sigs/kind/releases/download/${KIND_VERSION}/kind-linux-${arch}"
-              curl --fail --show-error --silent --location \
-                --retry 3 --retry-all-errors \
-                -o "${checksum_path}" \
-                "https://github.com/kubernetes-sigs/kind/releases/download/${KIND_VERSION}/kind-linux-${arch}.sha256sum"
 
-              if (cd "${kind_dir}" && grep -F "kind-linux-${arch}" "$(basename "${checksum_path}")" | sha256sum -c -); then
+              if printf '%s  %s\n' "${expected_checksum}" "$(basename "${download_path}")" | (cd "${kind_dir}" && sha256sum -c -); then
                 mv "${download_path}" "${binary_path}"
                 chmod +x "${binary_path}"
-                rm -f "${checksum_path}"
                 return 0
               fi
 
