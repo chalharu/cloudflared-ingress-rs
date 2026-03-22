@@ -8,6 +8,7 @@ on:
       - '.github/workflows/helm-chart.yaml'
   push:
     branches: [ "main" ]
+    tags: [ "v*.*.*" ]
     paths:
       - 'helm/**'
       - '.github/workflows/helm-chart.yaml'
@@ -30,7 +31,8 @@ jobs:
       - name: Render chart
         run: helm template cloudflared-ingress ./helm --namespace cloudflared-ingress-system >/tmp/cloudflared-ingress-rendered.yaml
       - name: Verify dev chart defaults to the latest image tag
-        run: grep -F 'image: "ghcr.io/chalharu/cloudflared-ingress-rs:latest"' /tmp/cloudflared-ingress-rendered.yaml
+        run: |
+          grep -F 'image: "ghcr.io/chalharu/cloudflared-ingress-rs:latest"' /tmp/cloudflared-ingress-rendered.yaml
       - name: Verify explicit image tag override
         run: |
           helm template cloudflared-ingress ./helm \
@@ -52,6 +54,16 @@ jobs:
           helm template cloudflared-ingress "${release_chart_dir}" \
             --namespace cloudflared-ingress-system >/tmp/cloudflared-ingress-rendered-release.yaml
           grep -F 'image: "ghcr.io/chalharu/cloudflared-ingress-rs:0.2.0"' /tmp/cloudflared-ingress-rendered-release.yaml
+      - name: Package chart
+        run: |
+          mkdir -p /tmp/helm-packages
+          helm package ./helm --destination /tmp/helm-packages
+      - name: Verify packaged chart metadata
+        run: |
+          chart_version="$(sed -n 's/^version:[[:space:]]*//p' helm/Chart.yaml)"
+          package_path="/tmp/helm-packages/cloudflared-ingress-${chart_version}.tgz"
+          [ -f "${package_path}" ]
+          helm show chart "${package_path}" | grep -F "version: ${chart_version}"
 
   install-kind:
     runs-on: ubuntu-latest
@@ -82,3 +94,58 @@ jobs:
           kubectl get clusterrolebinding cloudflared-ingress
           kubectl get ingressclass cloudflared
           kubectl get crd cloudflaredtunnels.chalharu.top
+
+  release:
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    needs:
+      - lint
+      - install-kind
+    permissions:
+      contents: read
+      packages: write
+    env:
+      OCI_REGISTRY: ghcr.io
+      OCI_REPOSITORY: oci://ghcr.io/${{ github.repository_owner }}/charts
+      OCI_CHART: oci://ghcr.io/${{ github.repository_owner }}/charts/cloudflared-ingress
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6.0.2
+      - name: Set up Helm
+        uses: Azure/setup-helm@b9e51907a09c216f16ebe8536097933489208112 # v4.3.0
+        with:
+          version: v3.17.3
+      - name: Determine release version
+        id: version
+        env:
+          GITHUB_REF_NAME: ${{ github.ref_name }}
+        run: |
+          version="${GITHUB_REF_NAME#v}"
+          chart_version="$(sed -n 's/^version:[[:space:]]*//p' helm/Chart.yaml)"
+          app_version="$(sed -n 's/^appVersion:[[:space:]]*//p' helm/Chart.yaml | tr -d '"')"
+          [ "${chart_version}" = "${version}" ]
+          [ "${app_version}" = "${version}" ]
+          echo "version=${version}" >> "${GITHUB_OUTPUT}"
+      - name: Log in to GHCR
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITHUB_REPOSITORY_OWNER: ${{ github.repository_owner }}
+        run: |
+          echo "${GITHUB_TOKEN}" | helm registry login "${OCI_REGISTRY}" \
+            --username "${GITHUB_REPOSITORY_OWNER}" \
+            --password-stdin
+      - name: Package chart
+        run: |
+          mkdir -p /tmp/helm-packages
+          helm package ./helm --destination /tmp/helm-packages
+      - name: Push chart to GHCR OCI
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          package_path="/tmp/helm-packages/cloudflared-ingress-${VERSION}.tgz"
+          [ -f "${package_path}" ]
+          helm push "${package_path}" "${OCI_REPOSITORY}"
+      - name: Inspect published chart
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: helm show chart "${OCI_CHART}" --version "${VERSION}"
