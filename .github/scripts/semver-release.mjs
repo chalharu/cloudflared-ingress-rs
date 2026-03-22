@@ -214,6 +214,52 @@ export async function validateLabelsFromEnv() {
 	await writeOutputs({ bump });
 }
 
+export async function selectSemverBumpFromEnv() {
+	const labels = ensureStringArray(
+		readJsonEnv("PR_LABELS_JSON"),
+		"PR_LABELS_JSON",
+	);
+	const bump = selectSemverBump(labels, process.env.DEFAULT_SEMVER_BUMP);
+
+	console.log(bump);
+	await writeOutputs({ bump });
+}
+
+async function readProjectVersionFromPaths({
+	cargoTomlPath = process.env.CARGO_TOML_PATH ?? "Cargo.toml",
+	cargoLockPath = process.env.CARGO_LOCK_PATH ?? "Cargo.lock",
+	chartPath = process.env.CHART_PATH ?? "helm/Chart.yaml",
+	currentVersionOverride = process.env.CURRENT_VERSION,
+} = {}) {
+	const [cargoTomlText, chartText, cargoLockText] = await Promise.all([
+		readFile(cargoTomlPath, "utf8"),
+		readFile(chartPath, "utf8"),
+		readFile(cargoLockPath, "utf8"),
+	]);
+
+	return {
+		cargoLockPath,
+		cargoLockText,
+		cargoTomlPath,
+		cargoTomlText,
+		chartPath,
+		chartText,
+		currentVersion: readCurrentVersion(
+			cargoTomlText,
+			chartText,
+			cargoLockText,
+			currentVersionOverride,
+		),
+	};
+}
+
+export async function printCurrentVersionFromEnv() {
+	const { currentVersion } = await readProjectVersionFromPaths();
+
+	console.log(currentVersion);
+	await writeOutputs({ version: currentVersion });
+}
+
 export async function bumpProjectVersionFromEnv() {
 	const labels = ensureStringArray(
 		readJsonEnv("PR_LABELS_JSON"),
@@ -221,21 +267,15 @@ export async function bumpProjectVersionFromEnv() {
 	);
 	const defaultBump = process.env.DEFAULT_SEMVER_BUMP;
 	const bump = selectSemverBump(labels, defaultBump);
-	const cargoTomlPath = process.env.CARGO_TOML_PATH ?? "Cargo.toml";
-	const cargoLockPath = process.env.CARGO_LOCK_PATH ?? "Cargo.lock";
-	const chartPath = process.env.CHART_PATH ?? "helm/Chart.yaml";
-	const currentVersionOverride = process.env.CURRENT_VERSION;
-	const [cargoTomlText, chartText, cargoLockText] = await Promise.all([
-		readFile(cargoTomlPath, "utf8"),
-		readFile(chartPath, "utf8"),
-		readFile(cargoLockPath, "utf8"),
-	]);
-	const currentVersion = readCurrentVersion(
-		cargoTomlText,
-		chartText,
+	const {
+		cargoLockPath,
 		cargoLockText,
-		currentVersionOverride,
-	);
+		cargoTomlPath,
+		cargoTomlText,
+		chartPath,
+		chartText,
+		currentVersion,
+	} = await readProjectVersionFromPaths();
 	const nextVersion = bumpVersion(currentVersion, bump);
 
 	await Promise.all([
@@ -262,11 +302,19 @@ async function main() {
 		case "validate-labels":
 			await validateLabelsFromEnv();
 			break;
+		case "select-bump":
+			await selectSemverBumpFromEnv();
+			break;
+		case "current-version":
+			await printCurrentVersionFromEnv();
+			break;
 		case "bump":
 			await bumpProjectVersionFromEnv();
 			break;
 		default:
-			throw new Error("usage: semver-release.mjs <validate-labels|bump>");
+			throw new Error(
+				"usage: semver-release.mjs <validate-labels|select-bump|current-version|bump>",
+			);
 	}
 }
 
