@@ -49,25 +49,21 @@ For a chart install, the required credential environment variables are `ACCOUNT_
 
 By default, the controller writes `CloudflaredTunnel`, Secret, and managed `cloudflared` resources into the `cloudflared` namespace. The quick start below keeps those resources in the install namespace instead.
 
-### 2. Create a values file
+### 2. Install the chart
 
-```yaml
+```bash
+cat <<'EOF' | helm upgrade --install cloudflared-ingress oci://ghcr.io/chalharu/charts/cloudflared-ingress \
+  --version <version> \
+  --namespace cloudflared-ingress-system \
+  --create-namespace \
+  -f -
 envFrom:
   - secretRef:
       name: cloudflare-credentials
 env:
   - name: CLOUDFLARE_TUNNEL_NAMESPACE
     value: cloudflared-ingress-system
-```
-
-### 3. Install the chart
-
-```bash
-helm upgrade --install cloudflared-ingress oci://ghcr.io/chalharu/charts/cloudflared-ingress \
-  --version <version> \
-  --namespace cloudflared-ingress-system \
-  --create-namespace \
-  -f values.yaml
+EOF
 ```
 
 Use a released chart version for production installs. Released charts default to the matching controller image version. Override `image.tag` only if you intentionally want a different published image alias such as `latest` or `X.Y`.
