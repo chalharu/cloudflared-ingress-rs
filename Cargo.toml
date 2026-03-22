@@ -1,6 +1,6 @@
 [package]
 name = "cloudflared-ingress-rs"
-version = "0.2.0-dev"
+version = "0.2.8"
 edition = "2024"
 rust-version = "1.94"
 
