@@ -1,5 +1,10 @@
-use std::{future::Future, time::Duration};
+use std::{
+    future::Future,
+    panic::{AssertUnwindSafe, resume_unwind},
+    time::Duration,
+};
 
+use futures::FutureExt as _;
 use k8s_openapi::{
     api::core::v1::Namespace,
     apiextensions_apiserver::pkg::apis::apiextensions::v1::CustomResourceDefinition,
@@ -110,6 +115,22 @@ pub(crate) async fn ensure_cloudflared_crd(client: &Client) {
         },
     )
     .await;
+}
+
+pub(crate) async fn with_cleanup<T, F, Fut, Cleanup, CleanupFut>(run: F, cleanup: Cleanup) -> T
+where
+    F: FnOnce() -> Fut,
+    Fut: Future<Output = T>,
+    Cleanup: FnOnce() -> CleanupFut,
+    CleanupFut: Future<Output = ()>,
+{
+    let result = AssertUnwindSafe(run()).catch_unwind().await;
+    cleanup().await;
+
+    match result {
+        Ok(value) => value,
+        Err(panic) => resume_unwind(panic),
+    }
 }
 
 pub(crate) async fn wait_for<T, F, Fut>(
