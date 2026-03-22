@@ -17,7 +17,6 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: write
-      pull-requests: read
     steps:
       - name: Checkout main
         uses: actions/checkout@v6.0.2
@@ -32,8 +31,27 @@ jobs:
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
       - name: Refresh main
         run: git pull --ff-only origin main
+      - name: Detect existing release tag for current main
+        id: release-guard
+        run: |
+          set -euo pipefail
+          latest_tag="$(git tag --list 'v*.*.*' --sort=-v:refname | head -n 1)"
+          head_commit="$(git rev-parse HEAD)"
+          latest_release_commit=""
+          latest_release_parent=""
+          if [ -n "${latest_tag}" ]; then
+            latest_release_commit="$(git rev-parse "${latest_tag}^{commit}")"
+            latest_release_parent="$(git rev-parse "${latest_tag}^{commit}^" 2>/dev/null || true)"
+          fi
+          if [ "${latest_release_commit}" = "${head_commit}" ] || [ "${latest_release_parent}" = "${head_commit}" ]; then
+            echo "already_released=true" >> "${GITHUB_OUTPUT}"
+            echo "Current main already has release tag ${latest_tag}."
+            exit 0
+          fi
+          echo "already_released=false" >> "${GITHUB_OUTPUT}"
       - name: Determine current release version
         id: current-version
+        if: steps.release-guard.outputs.already_released != 'true'
         run: |
           set -euo pipefail
           latest_tag="$(git tag --list 'v*.*.*' --sort=-v:refname | head -n 1)"
@@ -42,17 +60,26 @@ jobs:
           fi
       - name: Bump project version
         id: bump
+        if: steps.release-guard.outputs.already_released != 'true'
         env:
           CURRENT_VERSION: ${{ steps.current-version.outputs.current_version }}
           DEFAULT_SEMVER_BUMP: patch
           PR_LABELS_JSON: ${{ toJson(github.event.pull_request.labels.*.name) }}
         run: node .github/scripts/semver-release.mjs bump
-      - name: Commit release
+      - name: Create release tag
+        if: steps.release-guard.outputs.already_released != 'true'
         env:
           VERSION: ${{ steps.bump.outputs.version }}
         run: |
           set -euo pipefail
+          if git rev-parse -q --verify "refs/tags/v${VERSION}" >/dev/null; then
+            echo "Release tag v${VERSION} already exists."
+            exit 0
+          fi
           git add Cargo.toml Cargo.lock helm/Chart.yaml
           git commit -m "chore(release): v${VERSION}"
           git tag -a "v${VERSION}" -m "v${VERSION}"
-          git push origin HEAD:main --follow-tags
+          git push origin "refs/tags/v${VERSION}"
+      - name: Release already exists
+        if: steps.release-guard.outputs.already_released == 'true'
+        run: echo "Skipping release because current main already has a semver tag."

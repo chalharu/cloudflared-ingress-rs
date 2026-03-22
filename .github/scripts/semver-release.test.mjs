@@ -54,6 +54,7 @@ test("bumpVersion increments semantic versions by the requested level", () => {
 	assert.equal(bumpVersion("0.1.2", "patch"), "0.1.3");
 	assert.equal(bumpVersion("0.1.2", "minor"), "0.2.0");
 	assert.equal(bumpVersion("0.1.2", "major"), "1.0.0");
+	assert.equal(bumpVersion("0.2.0-dev", "patch"), "0.2.1");
 });
 
 test("readCurrentVersion rejects mismatched version sources", () => {
@@ -82,6 +83,19 @@ test("readCurrentVersion accepts an explicit current release version override", 
 	assert.throws(
 		() => readCurrentVersion(cargoToml, chartYaml, cargoLock, "not-semver"),
 		/invalid semantic version/,
+	);
+});
+
+test("readCurrentVersion accepts aligned dev metadata across managed files", () => {
+	assert.equal(
+		readCurrentVersion(
+			cargoToml.replace('version = "0.1.2"', 'version = "0.2.0-dev"'),
+			chartYaml
+				.replace("version: 0.1.2", "version: 0.2.0-dev")
+				.replace('appVersion: "0.1.2"', 'appVersion: "0.2.0-dev"'),
+			cargoLock.replace('version = "0.1.2"', 'version = "0.2.0-dev"'),
+		),
+		"0.2.0-dev",
 	);
 });
 
