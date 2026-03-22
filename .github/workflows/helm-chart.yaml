@@ -29,6 +29,29 @@ jobs:
         run: helm lint ./helm --strict
       - name: Render chart
         run: helm template cloudflared-ingress ./helm --namespace cloudflared-ingress-system >/tmp/cloudflared-ingress-rendered.yaml
+      - name: Verify dev chart defaults to the latest image tag
+        run: grep -F 'image: "ghcr.io/chalharu/cloudflared-ingress-rs:latest"' /tmp/cloudflared-ingress-rendered.yaml
+      - name: Verify explicit image tag override
+        run: |
+          helm template cloudflared-ingress ./helm \
+            --namespace cloudflared-ingress-system \
+            --set image.tag=1.2.3 >/tmp/cloudflared-ingress-rendered-override.yaml
+          grep -F 'image: "ghcr.io/chalharu/cloudflared-ingress-rs:1.2.3"' /tmp/cloudflared-ingress-rendered-override.yaml
+      - name: Verify numeric image tag override is preserved
+        run: |
+          helm template cloudflared-ingress ./helm \
+            --namespace cloudflared-ingress-system \
+            --set image.tag=0 >/tmp/cloudflared-ingress-rendered-major-tag.yaml
+          grep -F 'image: "ghcr.io/chalharu/cloudflared-ingress-rs:0"' /tmp/cloudflared-ingress-rendered-major-tag.yaml
+      - name: Verify release chart defaults to appVersion
+        run: |
+          release_chart_dir="$(mktemp -d)"
+          trap 'rm -rf "${release_chart_dir}"' EXIT
+          cp -R helm/. "${release_chart_dir}/"
+          sed -i 's/^appVersion: ".*"/appVersion: "0.2.0"/' "${release_chart_dir}/Chart.yaml"
+          helm template cloudflared-ingress "${release_chart_dir}" \
+            --namespace cloudflared-ingress-system >/tmp/cloudflared-ingress-rendered-release.yaml
+          grep -F 'image: "ghcr.io/chalharu/cloudflared-ingress-rs:0.2.0"' /tmp/cloudflared-ingress-rendered-release.yaml
 
   install-kind:
     runs-on: ubuntu-latest

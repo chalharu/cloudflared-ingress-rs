@@ -61,6 +61,20 @@ Create the name of the service account to use
 {{- end }}
 {{- end }}
 
+{{/*
+Resolve the container image tag.
+`main` publishes `latest` and `sha-*` tags, while tagged releases publish semver tags.
+*/}}
+{{- define "cloudflared-ingress.imageTag" -}}
+{{- $tag := .Values.image.tag | toString | trim -}}
+{{- if ne $tag "" -}}
+{{- $tag -}}
+{{- else if contains "-dev" .Chart.AppVersion -}}latest
+{{- else -}}
+{{- .Chart.AppVersion -}}
+{{- end -}}
+{{- end }}
+
 {{- define "cloudflared-ingress.clusterRoleName" -}}
 {{- if .Values.serviceAccount.create }}
 {{- default (include "cloudflared-ingress.fullname" .) .Values.serviceAccount.name }}
@@ -76,4 +90,3 @@ Create the name of the service account to use
 {{- default "default" .Values.serviceAccount.name }}
 {{- end }}
 {{- end }}
-
