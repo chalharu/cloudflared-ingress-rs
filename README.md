@@ -153,9 +153,9 @@ bash .github/skills/containerized-rust-ops/scripts/podman-rust.sh clippy
 - The merge-to-`main` release workflow derives the current release from the latest `vX.Y.Z` tag when one exists, then creates an isolated release-only commit with updated `Cargo.toml`, `Cargo.lock`, and `helm/Chart.yaml` and pushes only the new `vX.Y.Z` tag.
 - Release tags are the source of truth for published versions. Because `main` remains pull-request-only, the checked-in version metadata on `main` may lag behind the latest release tag and may intentionally use a `-dev` suffix as long as the repository still builds correctly.
 - The Helm chart defaults to `latest` while the checked-in `appVersion` carries a `-dev` suffix on `main`; release-tagged charts default to the matching semantic version unless `image.tag` is overridden.
-- Release tags also publish the Helm chart to GHCR as an OCI artifact at `oci://ghcr.io/chalharu/charts/cloudflared-ingress`.
+- Release tags also publish the Helm chart to GHCR as an OCI artifact at `oci://ghcr.io/chalharu/charts/cloudflared-ingress`. Helm OCI installs use the exact chart version tag because Helm requires the OCI tag to match the packaged chart version.
 - Because GitHub suppresses downstream `push` workflows triggered by the default `GITHUB_TOKEN`, the semver release workflow explicitly dispatches the Helm chart and Docker image workflows on the new tag.
-- Docker publishes `latest` and `sha-*` tags from `main`, semantic version tags from release tags, and prunes older non-semver or untagged GHCR versions while retaining the newest configured set.
+- Docker publishes `latest` and `sha-*` tags from `main`, refreshes `latest` on release tags, publishes `X.Y.Z`, `X.Y`, and `X` aliases for releases, and prunes older non-semver or untagged GHCR versions while retaining the newest configured set.
 
 GitHub Actions also runs SonarQube Cloud analysis via `.github/workflows/sonarqube-cloud.yaml`. That workflow targets the checked-in `chalharu_cloudflared-ingress-rs` project, generates Rust coverage with `cargo llvm-cov`, imports `target/llvm-cov/lcov.info`, and expects the `SONAR_TOKEN` repository secret to remain configured.
 
@@ -168,14 +168,31 @@ Contribution conventions are documented in `CONTRIBUTING.md`.
 
 ### Install from the published Helm chart
 
-Released charts are published to GHCR as OCI artifacts.
+Released charts are published to GHCR as OCI artifacts. Install the chart with the exact release version because Helm requires the OCI tag to match the packaged chart version.
 
 ```bash
-helm install cloudflared-ingress oci://ghcr.io/chalharu/charts/cloudflared-ingress \
+helm show values oci://ghcr.io/chalharu/charts/cloudflared-ingress \
+  --version <version>
+```
+
+```bash
+helm upgrade --install cloudflared-ingress oci://ghcr.io/chalharu/charts/cloudflared-ingress \
   --version <version> \
   --namespace cloudflared-ingress-system \
   --create-namespace
 ```
+
+The chart defaults to `ghcr.io/chalharu/cloudflared-ingress-rs:<appVersion>` on releases and `:latest` on the checked-in `-dev` chart. If you want the published controller image aliases instead, override `image.tag` explicitly:
+
+```bash
+helm upgrade --install cloudflared-ingress oci://ghcr.io/chalharu/charts/cloudflared-ingress \
+  --version <version> \
+  --namespace cloudflared-ingress-system \
+  --create-namespace \
+  --set image.tag=latest
+```
+
+Released controller images also publish `latest`, `<version>`, `<major>.<minor>`, and `<major>`, so `--set image.tag=<tag>` can pin the chart to the exact release tag or to a semver alias without changing the chart version.
 
 ## Troubleshooting
 

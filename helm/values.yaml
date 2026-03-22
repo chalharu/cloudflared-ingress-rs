@@ -4,6 +4,7 @@ image:
   # This sets the pull policy for images.
   pullPolicy: IfNotPresent
   # Overrides the image tag. When unset, dev charts use `latest` and releases use the chart appVersion.
+  # Released controller images also publish `latest`, `<major>.<minor>`, and `<major>` aliases.
   tag: ""
 
 # This is for the secretes for pulling an image from a private repository more information can be found here: https://kubernetes.io/docs/tasks/configure-pod-container/pull-image-private-registry/

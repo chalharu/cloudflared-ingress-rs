@@ -63,7 +63,8 @@ Create the name of the service account to use
 
 {{/*
 Resolve the container image tag.
-`main` publishes `latest` and `sha-*` tags, while tagged releases publish semver tags.
+Dev charts default to `latest`. Release charts default to `.Chart.AppVersion`,
+even though published release images also provide `latest`, `X.Y`, and `X` aliases.
 */}}
 {{- define "cloudflared-ingress.imageTag" -}}
 {{- $tag := .Values.image.tag | toString | trim -}}
