@@ -149,8 +149,8 @@ bash .github/skills/containerized-rust-ops/scripts/podman-rust.sh clippy
 
 ### Release automation
 
-- PRs merged into `main` must carry exactly one of `semver:major`, `semver:minor`, or `semver:patch`.
-- The merge-to-`main` release workflow bumps `Cargo.toml`, `Cargo.lock`, and `helm/Chart.yaml`, then creates the matching `vX.Y.Z` tag.
+- PRs targeting `main` should end up with exactly one of `semver:major`, `semver:minor`, or `semver:patch`. If none is present, the label guard applies `semver:patch` automatically so new PRs do not fail immediately.
+- The merge-to-`main` release workflow derives the current release from the latest `vX.Y.Z` tag when one exists, then bumps `Cargo.toml`, `Cargo.lock`, and `helm/Chart.yaml` and creates the next `vX.Y.Z` tag.
 - Docker publishes `latest` and `sha-*` tags from `main`, semantic version tags from release tags, and prunes older non-semver or untagged GHCR versions while retaining the newest configured set.
 
 GitHub Actions also runs SonarQube Cloud analysis via `.github/workflows/sonarqube-cloud.yaml`. That workflow targets the checked-in `chalharu_cloudflared-ingress-rs` project, generates Rust coverage with `cargo llvm-cov`, imports `target/llvm-cov/lcov.info`, and expects the `SONAR_TOKEN` repository secret to remain configured.

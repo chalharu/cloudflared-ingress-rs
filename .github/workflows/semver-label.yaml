@@ -1,7 +1,13 @@
-name: Semver label CI
+name: Semver label guard
 
 on:
   pull_request:
+    branches: [ "main" ]
+    paths:
+      - '.github/scripts/**'
+      - '.github/workflows/semver-label.yaml'
+      - '.github/workflows/semver-release.yaml'
+  pull_request_target:
     branches: [ "main" ]
     types:
       - opened
@@ -15,14 +21,107 @@ permissions:
   contents: read
 
 jobs:
-  validate:
+  release-helper-tests:
+    if: github.event_name == 'pull_request'
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
         uses: actions/checkout@v6.0.2
       - name: Run release helper tests
         run: node --test .github/scripts/*.test.mjs
-      - name: Validate semver label selection
+
+  ensure-semver-label:
+    if: github.event_name == 'pull_request_target'
+    runs-on: ubuntu-latest
+    permissions:
+      pull-requests: write
+    steps:
+      - name: Ensure a semver label is present
         env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITHUB_API_URL: ${{ github.api_url }}
+          REPOSITORY: ${{ github.repository }}
+          ISSUE_NUMBER: ${{ github.event.pull_request.number }}
           PR_LABELS_JSON: ${{ toJson(github.event.pull_request.labels.*.name) }}
-        run: node .github/scripts/semver-release.mjs validate-labels
+        run: |
+          node <<'EOF'
+          const semverLabels = ["semver:major", "semver:minor", "semver:patch"];
+          const labelDefinitions = {
+            "semver:major": {
+              color: "B60205",
+              description: "Bump the next major semantic version on merge to main.",
+            },
+            "semver:minor": {
+              color: "1D76DB",
+              description: "Bump the next minor semantic version on merge to main.",
+            },
+            "semver:patch": {
+              color: "0E8A16",
+              description: "Bump the next patch semantic version on merge to main.",
+            },
+          };
+
+          async function githubRequest(method, path, body, { allow404 = false } = {}) {
+            const response = await fetch(`${process.env.GITHUB_API_URL}${path}`, {
+              method,
+              headers: {
+                Accept: "application/vnd.github+json",
+                Authorization: `Bearer ${process.env.GH_TOKEN}`,
+                "X-GitHub-Api-Version": "2022-11-28",
+                "Content-Type": "application/json",
+              },
+              body: body === undefined ? undefined : JSON.stringify(body),
+            });
+
+            if (allow404 && response.status === 404) {
+              return null;
+            }
+
+            if (!response.ok) {
+              throw new Error(`${method} ${path} failed (${response.status}): ${await response.text()}`);
+            }
+
+            if (response.status === 204) {
+              return null;
+            }
+
+            return response.json();
+          }
+
+          const labels = JSON.parse(process.env.PR_LABELS_JSON ?? "[]");
+          const matched = labels.filter((label) => semverLabels.includes(label));
+
+          for (const [name, definition] of Object.entries(labelDefinitions)) {
+            const existing = await githubRequest(
+              "GET",
+              `/repos/${process.env.REPOSITORY}/labels/${encodeURIComponent(name)}`,
+              undefined,
+              { allow404: true },
+            );
+
+            if (existing) {
+              continue;
+            }
+
+            await githubRequest("POST", `/repos/${process.env.REPOSITORY}/labels`, {
+              name,
+              ...definition,
+            });
+          }
+
+          if (matched.length > 1) {
+            throw new Error(`expected at most one semver label, found: ${matched.join(", ")}`);
+          }
+
+          if (matched.length === 1) {
+            console.log(`semver label already set: ${matched[0]}`);
+            process.exit(0);
+          }
+
+          await githubRequest(
+            "POST",
+            `/repos/${process.env.REPOSITORY}/issues/${process.env.ISSUE_NUMBER}/labels`,
+            { labels: ["semver:patch"] },
+          );
+          console.log("applied semver:patch because no semver label was present");
+          EOF

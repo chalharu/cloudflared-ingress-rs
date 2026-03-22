@@ -149,7 +149,12 @@ export function updateChartVersions(text, newVersion) {
 	return updated;
 }
 
-export function readCurrentVersion(cargoTomlText, chartText, cargoLockText) {
+export function readCurrentVersion(
+	cargoTomlText,
+	chartText,
+	cargoLockText,
+	currentVersionOverride,
+) {
 	const { chartVersion, appVersion } = extractChartVersions(chartText);
 	const versions = [
 		extractCargoVersion(cargoTomlText),
@@ -159,6 +164,11 @@ export function readCurrentVersion(cargoTomlText, chartText, cargoLockText) {
 
 	if (cargoLockText !== undefined && cargoLockText !== null) {
 		versions.push(extractCargoLockVersion(cargoLockText));
+	}
+
+	if (currentVersionOverride) {
+		parseSemver(currentVersionOverride);
+		return currentVersionOverride;
 	}
 
 	const distinctVersions = [...new Set(versions)];
@@ -201,6 +211,7 @@ export async function bumpProjectVersionFromEnv() {
 	const cargoTomlPath = process.env.CARGO_TOML_PATH ?? "Cargo.toml";
 	const cargoLockPath = process.env.CARGO_LOCK_PATH ?? "Cargo.lock";
 	const chartPath = process.env.CHART_PATH ?? "helm/Chart.yaml";
+	const currentVersionOverride = process.env.CURRENT_VERSION;
 	const [cargoTomlText, chartText, cargoLockText] = await Promise.all([
 		readFile(cargoTomlPath, "utf8"),
 		readFile(chartPath, "utf8"),
@@ -210,6 +221,7 @@ export async function bumpProjectVersionFromEnv() {
 		cargoTomlText,
 		chartText,
 		cargoLockText,
+		currentVersionOverride,
 	);
 	const nextVersion = bumpVersion(currentVersion, bump);
 

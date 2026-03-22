@@ -64,6 +64,22 @@ test("readCurrentVersion rejects mismatched version sources", () => {
 	);
 });
 
+test("readCurrentVersion accepts an explicit current release version override", () => {
+	assert.equal(
+		readCurrentVersion(
+			cargoToml,
+			chartYaml.replace('appVersion: "0.1.2"', 'appVersion: "9.9.9"'),
+			cargoLock,
+			"0.1.2",
+		),
+		"0.1.2",
+	);
+	assert.throws(
+		() => readCurrentVersion(cargoToml, chartYaml, cargoLock, "not-semver"),
+		/invalid semantic version/,
+	);
+});
+
 test("update helpers rewrite the project version in every managed file", () => {
 	const nextVersion = "0.1.3";
 

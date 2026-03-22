@@ -47,6 +47,6 @@ Types:
 
 ## 5. Release Labels
 
-- PRs targeting `main` must carry exactly one of `semver:major`, `semver:minor`, or `semver:patch`.
-- After merge, GitHub Actions bumps `Cargo.toml`, `Cargo.lock`, and `helm/Chart.yaml`, then creates the matching `vX.Y.Z` tag.
+- PRs targeting `main` should end up with exactly one of `semver:major`, `semver:minor`, or `semver:patch`. If none is present, the label guard applies `semver:patch` automatically so the initial PR checks stay green.
+- After merge, GitHub Actions derives the current release from the latest `vX.Y.Z` tag when one exists, then bumps `Cargo.toml`, `Cargo.lock`, and `helm/Chart.yaml` and creates the next matching tag.
 - Docker publishes `latest` and `sha-*` tags from `main`, semantic version tags from release tags, and prunes older non-semver or untagged GHCR versions while retaining the newest configured set.
