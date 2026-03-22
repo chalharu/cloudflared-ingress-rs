@@ -1,0 +1,28 @@
+name: Semver label CI
+
+on:
+  pull_request:
+    branches: [ "main" ]
+    types:
+      - opened
+      - reopened
+      - synchronize
+      - ready_for_review
+      - labeled
+      - unlabeled
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6.0.2
+      - name: Run release helper tests
+        run: node --test .github/scripts/*.test.mjs
+      - name: Validate semver label selection
+        env:
+          PR_LABELS_JSON: ${{ toJson(github.event.pull_request.labels.*.name) }}
+        run: node .github/scripts/semver-release.mjs validate-labels

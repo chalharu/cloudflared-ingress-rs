@@ -20,6 +20,7 @@ This document is the source of truth for contribution rules.
 - Rust changes: `cargo test`
 - Rust formatting/lint-sensitive changes: `cargo fmt --all --check && cargo clippy --workspace --all-targets -- -D warnings`
 - `.github/hooks/**` changes: `node --test .github/hooks/postToolUse/main.test.mjs`
+- `.github/scripts/**` changes: `node --test .github/scripts/*.test.mjs`
 - Hosted CI runs SonarQube Cloud analysis from `.github/workflows/sonarqube-cloud.yaml`; keep `sonar-project.properties` in sync with the repository layout and with the Rust LCOV coverage path produced by `cargo llvm-cov`.
 
 ## 4. Commit Message Rules (Conventional Commits)
@@ -43,3 +44,9 @@ Types:
 - `refactor`: code change without behavior change
 - `test`: tests
 - `chore`: maintenance/configuration
+
+## 5. Release Labels
+
+- PRs targeting `main` must carry exactly one of `semver:major`, `semver:minor`, or `semver:patch`.
+- After merge, GitHub Actions bumps `Cargo.toml`, `Cargo.lock`, and `helm/Chart.yaml`, then creates the matching `vX.Y.Z` tag.
+- Docker publishes `latest` and `sha-*` tags from `main`, semantic version tags from release tags, and prunes older non-semver or untagged GHCR versions while retaining the newest configured set.

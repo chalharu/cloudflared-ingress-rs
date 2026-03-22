@@ -52,6 +52,13 @@ pub enum ControllerError {
         backtrace: Backtrace,
     },
 
+    #[snafu(display("Cloudflare zone not found for hostname: {hostname}"))]
+    CloudflareZoneNotFound {
+        hostname: String,
+        #[snafu(backtrace)]
+        backtrace: Backtrace,
+    },
+
     #[snafu(display("I/O Error: {source}"))]
     IoError {
         #[snafu(source)]
@@ -206,6 +213,13 @@ impl ControllerError {
         IllegalDocumentSnafu.build()
     }
 
+    pub fn cloudflare_zone_not_found(hostname: impl Into<String>) -> Self {
+        CloudflareZoneNotFoundSnafu {
+            hostname: hostname.into(),
+        }
+        .build()
+    }
+
     pub fn metric_label(&self) -> &'static str {
         match self {
             Self::SerializationError { .. } => "serialization_error",
@@ -213,6 +227,7 @@ impl ControllerError {
             Self::KubeError { .. } => "kube_error",
             Self::FinalizerError { .. } => "finalizer_error",
             Self::IllegalDocument { .. } => "illegal_document",
+            Self::CloudflareZoneNotFound { .. } => "cloudflare_zone_not_found",
             Self::IoError { .. } => "io_error",
             Self::CloudflareFrameworkError { .. } => "cloudflare_framework_error",
             Self::CloudflareApiFailure { .. } => "cloudflare_api_failure",
@@ -242,6 +257,17 @@ mod tests {
 
         assert!(matches!(error, ControllerError::IllegalDocument { .. }));
         assert_eq!(error.metric_label(), "illegal_document");
+    }
+
+    #[test]
+    fn cloudflare_zone_not_found_constructor_returns_expected_variant_and_label() {
+        let error = ControllerError::cloudflare_zone_not_found("api.other.com");
+
+        assert!(matches!(
+            error,
+            ControllerError::CloudflareZoneNotFound { ref hostname, .. } if hostname == "api.other.com"
+        ));
+        assert_eq!(error.metric_label(), "cloudflare_zone_not_found");
     }
 
     #[test]
@@ -304,6 +330,10 @@ mod tests {
             ControllerError::IllegalDocument {
                 backtrace: Backtrace::generate(),
             },
+            ControllerError::CloudflareZoneNotFound {
+                hostname: "api.other.com".to_string(),
+                backtrace: Backtrace::generate(),
+            },
             ControllerError::IoError {
                 source: std::io::Error::other("io"),
                 backtrace: Backtrace::generate(),
@@ -326,6 +356,7 @@ mod tests {
             labels,
             vec![
                 "illegal_document",
+                "cloudflare_zone_not_found",
                 "io_error",
                 "infallible_error",
                 "try_from_int_error",
