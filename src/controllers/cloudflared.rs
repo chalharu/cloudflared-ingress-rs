@@ -39,7 +39,7 @@ use kube::{
     api::{DeleteParams, ObjectMeta, Patch, PatchParams},
     runtime::{Controller, controller::Action, finalizer::finalizer, watcher::Config},
 };
-use rand::{Rng, SeedableRng};
+use rand::TryRng as _;
 use tracing::{info, warn};
 use uuid::Uuid;
 
@@ -182,6 +182,40 @@ fn collect_current_cname_records(
         .collect()
 }
 
+fn split_reconcile_targets(
+    cfdt_list: Vec<CloudflaredTunnel>,
+    tunnel_list: Vec<Tunnel>,
+    prefix: &str,
+) -> (Vec<(CloudflaredTunnel, Option<Tunnel>)>, Vec<String>) {
+    let mut tunnels_by_id = tunnel_list
+        .into_iter()
+        .map(|tunnel| (tunnel.id, tunnel))
+        .collect::<HashMap<_, _>>();
+    let reconcile_targets = cfdt_list
+        .into_iter()
+        .map(|cfdt| {
+            let tunnel = cfdt
+                .status
+                .as_ref()
+                .and_then(|status| status.tunnel_id.as_deref())
+                .and_then(|id| Uuid::parse_str(id).ok())
+                .and_then(|id| tunnels_by_id.remove(&id));
+            (cfdt, tunnel)
+        })
+        .collect();
+    let stale_tunnel_ids = tunnels_by_id
+        .into_iter()
+        .filter(|(_, tunnel)| tunnel.name.starts_with(prefix))
+        .map(|(id, _)| {
+            id.as_hyphenated()
+                .encode_lower(&mut Uuid::encode_buffer())
+                .to_string()
+        })
+        .collect();
+
+    (reconcile_targets, stale_tunnel_ids)
+}
+
 #[allow(clippy::result_large_err)]
 fn matching_hostname_cname_record<'a>(
     dns_records: impl IntoIterator<Item = DnsRecordRef<'a>>,
@@ -244,6 +278,66 @@ async fn sync_tunnel_dns_records(
     }
 
     Ok(())
+}
+
+#[allow(clippy::result_large_err)]
+fn cloudflared_owner_reference(cfdt: &CloudflaredTunnel) -> Result<OwnerReference> {
+    Ok(OwnerReference {
+        api_version: CloudflaredTunnel::api_version(&()).to_string(),
+        kind: CloudflaredTunnel::kind(&()).to_string(),
+        name: cfdt.name_any(),
+        uid: cfdt.uid().ok_or_else(Error::illegal_document)?,
+        ..Default::default()
+    })
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SecretRefSelection<'a> {
+    Existing(&'a str),
+    UseSpec {
+        spec_ref: &'a str,
+        previous_status_ref: Option<&'a str>,
+    },
+    GenerateNew,
+}
+
+fn select_tunnel_secret_ref<'a>(
+    spec_ref: Option<&'a str>,
+    status_ref: Option<&'a str>,
+) -> SecretRefSelection<'a> {
+    match (spec_ref, status_ref) {
+        (None, Some(status_ref)) => SecretRefSelection::Existing(status_ref),
+        (Some(spec_ref), Some(status_ref)) if spec_ref == status_ref => {
+            SecretRefSelection::Existing(status_ref)
+        }
+        (Some(spec_ref), previous_status_ref) => SecretRefSelection::UseSpec {
+            spec_ref,
+            previous_status_ref,
+        },
+        (None, None) => SecretRefSelection::GenerateNew,
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ConfigRefSelection<'a> {
+    Existing(&'a str),
+    GenerateNew,
+}
+
+fn select_config_secret_ref(status_ref: Option<&str>) -> ConfigRefSelection<'_> {
+    match status_ref {
+        Some(status_ref) => ConfigRefSelection::Existing(status_ref),
+        None => ConfigRefSelection::GenerateNew,
+    }
+}
+
+#[allow(clippy::result_large_err)]
+fn validate_tunnel_secret(secret: Vec<u8>) -> Result<Vec<u8>> {
+    if secret.len() < 32 {
+        return Err(Error::illegal_document());
+    }
+
+    Ok(secret)
 }
 
 // Context for our reconciler
@@ -349,35 +443,21 @@ impl Context {
             .cloudflare_api
             .list_tunnels(account_id.as_str(), self.args.cloudflare_tunnel_prefix())
             .await?;
-        let mut tunnel_dic_by_id = tunnel_list
-            .into_iter()
-            .map(|x| (x.id, x))
-            .collect::<HashMap<_, _>>();
+        let (reconcile_targets, stale_tunnel_ids) =
+            split_reconcile_targets(cfdt_list, tunnel_list, self.args.cloudflare_tunnel_prefix());
 
-        for cfdt in cfdt_list {
-            let tunnel = cfdt
-                .status
-                .as_ref()
-                .and_then(|s| s.tunnel_id.as_ref())
-                .and_then(|id| Uuid::parse_str(id).ok())
-                .and_then(|id| tunnel_dic_by_id.remove(&id));
+        for (cfdt, tunnel) in reconcile_targets {
             self.reconcile_tunnel(cfdt, tunnel).await?;
         }
 
-        for t in tunnel_dic_by_id {
-            if t.1.name.starts_with(self.args.cloudflare_tunnel_prefix()) {
-                let tunnel_id =
-                    t.0.as_hyphenated()
-                        .encode_lower(&mut Uuid::encode_buffer())
-                        .to_string();
-                if let Err(e) = self
-                    .cloudflare_api
-                    .delete_tunnel(account_id.as_str(), &tunnel_id)
-                    .await
-                {
-                    // tunnel削除の失敗は警告のみとする
-                    warn!("Delete cloudflare tunnel failed: {}", e);
-                }
+        for tunnel_id in stale_tunnel_ids {
+            if let Err(e) = self
+                .cloudflare_api
+                .delete_tunnel(account_id.as_str(), &tunnel_id)
+                .await
+            {
+                // tunnel削除の失敗は警告のみとする
+                warn!("Delete cloudflare tunnel failed: {}", e);
             }
         }
 
@@ -416,14 +496,7 @@ impl Context {
         info!("Reconcile cloudflaredTunnel: {}", cfdt.name_any());
         let name = cfdt.name_any();
         let namespace = cfdt.namespace().ok_or_else(Error::illegal_document)?;
-        let uid = cfdt.uid().ok_or_else(Error::illegal_document)?;
-        let owner_ref = OwnerReference {
-            api_version: CloudflaredTunnel::api_version(&()).to_string(),
-            kind: CloudflaredTunnel::kind(&()).to_string(),
-            name: name.clone(),
-            uid,
-            ..Default::default()
-        };
+        let owner_ref = cloudflared_owner_reference(&cfdt)?;
 
         // DNS ZoneのリストをCloudflareから取得
         let zones = self.cloudflare_api.list_zone().await?;
@@ -431,23 +504,13 @@ impl Context {
 
         // ZoneIDからDNSレコードを引く辞書を作成
         let zone_dns_list = try_join_all(zones.iter().map(|z| async {
-            Result::<_, Error>::Ok(
-                self.cloudflare_api
-                    .list_dns(z.id.as_str())
-                    .await?
-                    .into_iter()
-                    .fold(
-                        HashMap::new(),
-                        |mut acc: HashMap<String, Vec<DnsRecord>>, value| {
-                            acc.entry(z.id.clone()).or_default().push(value);
-                            acc
-                        },
-                    ),
-            )
+            Result::<_, Error>::Ok((
+                z.id.clone(),
+                self.cloudflare_api.list_dns(z.id.as_str()).await?,
+            ))
         }))
         .await?
         .into_iter()
-        .flat_map(|x| x.into_iter())
         .collect::<HashMap<_, _>>();
 
         let tunnel_secret = self.get_tunnel_secret(&cfdt, owner_ref.clone()).await?;
@@ -500,28 +563,35 @@ impl Context {
         let ns = cfdt.namespace().ok_or_else(Error::illegal_document)?;
         let api = Api::<Secret>::namespaced(self.client.clone(), &ns);
 
-        let secret_ref = match (spec_ref, status_ref) {
-            (None, Some(st)) => st.to_string(),
-            (Some(sp), Some(st)) if sp == st => st.to_string(),
-            (sp, st) => {
-                let secret_ref = if let Some(sp) = sp {
-                    // もし自分自身が作成したリソースなら削除
-                    if let Some(st) = st
-                        && let Some(secret) = api.get_opt(st.as_str()).await?
-                        && secret.owner_references().contains(&owner_ref)
-                    {
-                        api.delete(&secret.name_any(), &DeleteParams::background())
-                            .await?;
-                    }
-                    sp.to_string()
-                } else {
-                    Uuid::new_v4()
-                        .as_hyphenated()
-                        .encode_lower(&mut Uuid::encode_buffer())
-                        .to_string()
-                };
+        let secret_ref = match select_tunnel_secret_ref(
+            spec_ref.map(String::as_str),
+            status_ref.map(String::as_str),
+        ) {
+            SecretRefSelection::Existing(secret_ref) => secret_ref.to_string(),
+            SecretRefSelection::UseSpec {
+                spec_ref,
+                previous_status_ref,
+            } => {
+                if let Some(previous_status_ref) = previous_status_ref
+                    && let Some(secret) = api.get_opt(previous_status_ref).await?
+                    && secret.owner_references().contains(&owner_ref)
+                {
+                    api.delete(&secret.name_any(), &DeleteParams::background())
+                        .await?;
+                }
 
-                // statusに新しいsecret_refを設定
+                let secret_ref = spec_ref.to_string();
+                patch_cloudflaredtunnel_status(&self.client, &ns, &cfdt.name_any(), |status| {
+                    status.tunnel_secret_ref = Some(secret_ref.clone())
+                })
+                .await?;
+                secret_ref
+            }
+            SecretRefSelection::GenerateNew => {
+                let secret_ref = Uuid::new_v4()
+                    .as_hyphenated()
+                    .encode_lower(&mut Uuid::encode_buffer())
+                    .to_string();
                 patch_cloudflaredtunnel_status(&self.client, &ns, &cfdt.name_any(), |status| {
                     status.tunnel_secret_ref = Some(secret_ref.clone())
                 })
@@ -539,14 +609,14 @@ impl Context {
                 .ok_or_else(Error::illegal_document)?
                 .0
         } else {
-            let raw_data = tokio::task::spawn_blocking(|| {
+            let raw_data = tokio::task::spawn_blocking(|| -> std::io::Result<Vec<u8>> {
                 let mut raw_data = vec![0u8; 32];
-                let mut rng = rand::rngs::StdRng::try_from_rng(&mut rand::rngs::SysRng)
-                    .expect("system RNG should be available");
-                rng.fill_bytes(raw_data.as_mut_slice());
-                raw_data
+                let mut rng = rand::rngs::SysRng;
+                rng.try_fill_bytes(raw_data.as_mut_slice())
+                    .map_err(std::io::Error::other)?;
+                Ok(raw_data)
             })
-            .await?;
+            .await??;
             let data =
                 BTreeMap::from([(TUNNEL_SECRET_KEY.to_string(), ByteString(raw_data.clone()))]);
             api.patch(
@@ -567,11 +637,7 @@ impl Context {
             raw_data
         };
 
-        if secret.len() < 32 {
-            return Err(Error::illegal_document());
-        }
-
-        Ok(secret)
+        validate_tunnel_secret(secret)
     }
 
     async fn get_tunnel_config(
@@ -590,24 +656,25 @@ impl Context {
             tunnel_secret,
         )?;
 
-        let config_ref = if let Some(config_ref) = cfdt
-            .status
-            .as_ref()
-            .and_then(|s| s.config_secret_ref.as_ref())
-        {
-            config_ref.to_string()
-        } else {
-            let config_ref = Uuid::new_v4()
-                .as_hyphenated()
-                .encode_lower(&mut Uuid::encode_buffer())
-                .to_string();
+        let config_ref = match select_config_secret_ref(
+            cfdt.status
+                .as_ref()
+                .and_then(|status| status.config_secret_ref.as_deref()),
+        ) {
+            ConfigRefSelection::Existing(config_ref) => config_ref.to_string(),
+            ConfigRefSelection::GenerateNew => {
+                let config_ref = Uuid::new_v4()
+                    .as_hyphenated()
+                    .encode_lower(&mut Uuid::encode_buffer())
+                    .to_string();
 
-            // statusに新しいconfig_refを設定
-            patch_cloudflaredtunnel_status(&self.client, &ns, &cfdt.name_any(), |status| {
-                status.config_secret_ref = Some(config_ref.clone())
-            })
-            .await?;
-            config_ref
+                // statusに新しいconfig_refを設定
+                patch_cloudflaredtunnel_status(&self.client, &ns, &cfdt.name_any(), |status| {
+                    status.config_secret_ref = Some(config_ref.clone())
+                })
+                .await?;
+                config_ref
+            }
         };
 
         let secret_updated = patch_opaque_secret_string(
@@ -625,19 +692,29 @@ impl Context {
 
 #[cfg(test)]
 mod tests {
+    use super::customresource::CloudflaredTunnelStatus;
     use super::*;
+    use crate::controllers::test_support;
     use cloudflare::endpoints::zones::zone::Zone;
     use cloudflare::framework::{
         Environment,
         auth::Credentials,
         client::{ClientConfig, async_api::Client as HttpApiClient},
     };
-
+    use kube::api::PostParams;
+    use mockito::Matcher;
     use serde_json::json;
     use serde_yaml::Value;
 
     const ZONE_ID: &str = "00000000000000000000000000000001";
     const STALE_DNS_ID: &str = "00000000000000000000000000000002";
+
+    #[test]
+    fn hostname_matches_zone_accepts_apex_and_subdomains_only() {
+        assert!(hostname_matches_zone("example.com", "example.com"));
+        assert!(hostname_matches_zone("api.example.com", "example.com"));
+        assert!(!hostname_matches_zone("badexample.com", "example.com"));
+    }
 
     #[test]
     fn best_matching_zone_id_matches_zone_apex() {
@@ -713,6 +790,20 @@ mod tests {
             }
         }))
         .expect("zone should deserialize")
+    }
+
+    #[test]
+    fn desired_dns_records_returns_empty_when_there_is_no_ingress_configuration() {
+        let records = desired_dns_records(
+            &CloudflaredTunnelSpec {
+                default_ingress_service: "http_status:404".to_string(),
+                ..Default::default()
+            },
+            &[zone("zone-a", "example.com")],
+        )
+        .expect("missing ingress rules should not fail");
+
+        assert!(records.is_empty());
     }
 
     #[test]
@@ -847,6 +938,38 @@ mod tests {
     }
 
     #[test]
+    fn dns_record_ref_returns_borrowed_record_fields() {
+        let record = dns_record("dns-1", "app.example.com", "demo.cfargotunnel.com");
+        let record_ref = dns_record_ref(&record);
+
+        assert_eq!(record_ref.id, "dns-1");
+        assert_eq!(record_ref.name, "app.example.com");
+        assert!(matches!(
+            record_ref.content,
+            DnsContent::CNAME { content } if content == "demo.cfargotunnel.com"
+        ));
+    }
+
+    #[test]
+    fn collect_current_cname_records_keeps_only_records_for_the_target_tunnel() {
+        let records = collect_current_cname_records(
+            &HashMap::from([(
+                ZONE_ID.to_string(),
+                vec![
+                    dns_record("dns-1", "app.example.com", "demo.cfargotunnel.com"),
+                    dns_record("dns-2", "other.example.com", "other.cfargotunnel.com"),
+                ],
+            )]),
+            "demo.cfargotunnel.com",
+        );
+
+        assert_eq!(
+            records,
+            HashSet::from([("dns-1".to_string(), ZONE_ID.to_string())])
+        );
+    }
+
+    #[test]
     fn matching_hostname_cname_record_returns_the_matching_record_id() {
         let other_content = DnsContent::CNAME {
             content: "demo.cfargotunnel.com".to_string(),
@@ -954,6 +1077,19 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn sync_tunnel_dns_records_requires_zone_dns_entries_for_each_desired_record() {
+        let server = mockito::Server::new_async().await;
+        let api = create_cloudflare_api(server.url().as_str()).await;
+        let desired_dns_records =
+            HashSet::from([("app.example.com".to_string(), ZONE_ID.to_string())]);
+        let zone_dns_list = HashMap::new();
+
+        let result = sync_tunnel_dns_records(&api, &desired_dns_records, &zone_dns_list, "demo");
+
+        assert!(matches!(result.await, Err(Error::IllegalDocument { .. })));
+    }
+
+    #[tokio::test]
     async fn sync_tunnel_dns_records_keeps_matching_records_without_api_calls() {
         let server = mockito::Server::new_async().await;
         let api = create_cloudflare_api(server.url().as_str()).await;
@@ -1015,5 +1151,468 @@ mod tests {
 
         create_dns_mock.assert_async().await;
         delete_dns_mock.assert_async().await;
+    }
+
+    fn cloudflared_tunnel(
+        name: &str,
+        tunnel_id: Option<&str>,
+        uid: Option<&str>,
+    ) -> CloudflaredTunnel {
+        CloudflaredTunnel {
+            metadata: ObjectMeta {
+                name: Some(name.to_string()),
+                namespace: Some("default".to_string()),
+                uid: uid.map(str::to_string),
+                ..Default::default()
+            },
+            spec: CloudflaredTunnelSpec {
+                default_ingress_service: "http_status:404".to_string(),
+                ..Default::default()
+            },
+            status: tunnel_id.map(|tunnel_id| CloudflaredTunnelStatus {
+                tunnel_id: Some(tunnel_id.to_string()),
+                ..Default::default()
+            }),
+        }
+    }
+
+    fn tunnel(id: &str, name: &str) -> Tunnel {
+        serde_json::from_value(json!({
+            "id": id,
+            "created_at": "2000-01-01T00:00:00.000000Z",
+            "deleted_at": null,
+            "name": name,
+            "connections": [],
+            "metadata": {}
+        }))
+        .expect("tunnel should deserialize")
+    }
+
+    #[test]
+    fn split_reconcile_targets_matches_existing_tunnels_and_filters_prefixed_stale_tunnels() {
+        let managed_tunnel_id = "00000000-0000-0000-0000-000000000001";
+        let stale_tunnel_id = "00000000-0000-0000-0000-000000000002";
+        let external_tunnel_id = "00000000-0000-0000-0000-000000000003";
+        let (reconcile_targets, stale_tunnel_ids) = split_reconcile_targets(
+            vec![
+                cloudflared_tunnel("managed", Some(managed_tunnel_id), Some("uid-managed")),
+                cloudflared_tunnel("new", None, Some("uid-new")),
+            ],
+            vec![
+                tunnel(managed_tunnel_id, "k8s-ingress-managed"),
+                tunnel(stale_tunnel_id, "k8s-ingress-stale"),
+                tunnel(external_tunnel_id, "external-shared"),
+            ],
+            "k8s-ingress-",
+        );
+
+        assert_eq!(reconcile_targets.len(), 2);
+        assert_eq!(reconcile_targets[0].0.name_any(), "managed");
+        assert_eq!(
+            reconcile_targets[0]
+                .1
+                .as_ref()
+                .map(|tunnel| tunnel.name.as_str()),
+            Some("k8s-ingress-managed")
+        );
+        assert_eq!(reconcile_targets[1].0.name_any(), "new");
+        assert!(reconcile_targets[1].1.is_none());
+        assert_eq!(stale_tunnel_ids, vec![stale_tunnel_id.to_string()]);
+    }
+
+    #[test]
+    fn cloudflared_owner_reference_uses_the_resource_identity() {
+        let owner_ref =
+            cloudflared_owner_reference(&cloudflared_tunnel("managed", None, Some("uid-managed")))
+                .expect("owner reference should build");
+
+        assert_eq!(owner_ref.api_version, "chalharu.top/v1alpha1");
+        assert_eq!(owner_ref.kind, "CloudflaredTunnel");
+        assert_eq!(owner_ref.name, "managed");
+        assert_eq!(owner_ref.uid, "uid-managed");
+    }
+
+    #[test]
+    fn cloudflared_owner_reference_requires_a_uid() {
+        let result = cloudflared_owner_reference(&cloudflared_tunnel("managed", None, None));
+
+        assert!(matches!(result, Err(Error::IllegalDocument { .. })));
+    }
+
+    #[test]
+    fn select_tunnel_secret_ref_covers_existing_spec_and_generated_states() {
+        assert_eq!(
+            select_tunnel_secret_ref(None, Some("status-secret")),
+            SecretRefSelection::Existing("status-secret")
+        );
+        assert_eq!(
+            select_tunnel_secret_ref(Some("spec-secret"), Some("spec-secret")),
+            SecretRefSelection::Existing("spec-secret")
+        );
+        assert_eq!(
+            select_tunnel_secret_ref(Some("spec-secret"), Some("old-secret")),
+            SecretRefSelection::UseSpec {
+                spec_ref: "spec-secret",
+                previous_status_ref: Some("old-secret"),
+            }
+        );
+        assert_eq!(
+            select_tunnel_secret_ref(Some("spec-secret"), None),
+            SecretRefSelection::UseSpec {
+                spec_ref: "spec-secret",
+                previous_status_ref: None,
+            }
+        );
+        assert_eq!(
+            select_tunnel_secret_ref(None, None),
+            SecretRefSelection::GenerateNew
+        );
+    }
+
+    #[test]
+    fn select_config_secret_ref_reuses_status_or_requests_generation() {
+        assert_eq!(
+            select_config_secret_ref(Some("config-secret")),
+            ConfigRefSelection::Existing("config-secret")
+        );
+        assert_eq!(
+            select_config_secret_ref(None),
+            ConfigRefSelection::GenerateNew
+        );
+    }
+
+    #[test]
+    fn validate_tunnel_secret_requires_at_least_32_bytes() {
+        assert!(matches!(
+            validate_tunnel_secret(vec![0; 31]),
+            Err(Error::IllegalDocument { .. })
+        ));
+        assert_eq!(
+            validate_tunnel_secret(vec![7; 32]).expect("32-byte secret should be accepted"),
+            vec![7; 32]
+        );
+    }
+
+    #[test]
+    fn zone_dns_list_preserves_entries_for_empty_record_sets() {
+        let zone_id = "zone-a".to_string();
+        let zone_dns_list = vec![(zone_id.clone(), Vec::<DnsRecord>::new())]
+            .into_iter()
+            .collect::<HashMap<_, _>>();
+
+        assert!(zone_dns_list.contains_key(&zone_id));
+        assert!(zone_dns_list.get(&zone_id).is_some_and(Vec::is_empty));
+    }
+
+    fn managed_cloudflared_tunnel(name: &str, namespace: &str) -> CloudflaredTunnel {
+        CloudflaredTunnel {
+            metadata: ObjectMeta {
+                name: Some(name.to_string()),
+                namespace: Some(namespace.to_string()),
+                ..Default::default()
+            },
+            spec: CloudflaredTunnelSpec {
+                ingress: Some(vec![CloudflaredTunnelIngress {
+                    hostname: "app.example.com".to_string(),
+                    service: "https://api.default.svc".to_string(),
+                    path: Some("^/api(?:/|$)".to_string()),
+                    origin_request: Some(CloudflaredTunnelOriginRequest {
+                        no_tls_verify: Some(true),
+                        ..Default::default()
+                    }),
+                }]),
+                default_ingress_service: "http_status:404".to_string(),
+                ..Default::default()
+            },
+            status: None,
+        }
+    }
+
+    fn test_client() -> Client {
+        Client::try_from(kube::Config::new(
+            "http://127.0.0.1:1"
+                .parse()
+                .expect("test server URI should parse"),
+        ))
+        .expect("client should build")
+    }
+
+    #[tokio::test]
+    async fn kind_reconcile_creates_managed_resources_with_mocked_cloudflare() {
+        let Some(client) = test_support::kind_client().await else {
+            return;
+        };
+
+        test_support::ensure_cloudflared_crd(&client).await;
+        let namespace = test_support::unique_name("cloudflared");
+        test_support::ensure_namespace(&client, &namespace).await;
+
+        let mut server = mockito::Server::new_async().await;
+        let list_tunnels_mock = server
+            .mock("GET", "/accounts/account/cfd_tunnel")
+            .match_query(Matcher::AllOf(vec![
+                Matcher::UrlEncoded("is_deleted".into(), "false".into()),
+                Matcher::UrlEncoded("include_prefix".into(), "prefix-".into()),
+            ]))
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(r#"{"result":[],"result_info":{},"success":true,"errors":[],"messages":[]}"#)
+            .create_async()
+            .await;
+        let list_zones_mock = server
+            .mock("GET", "/zones")
+            .match_query(Matcher::Any)
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(
+                r#"{"result":[{"id":"00000000000000000000000000000001","name":"example.com","status":"active","paused":false,"type":"full","development_mode":0,"name_servers":[],"original_name_servers":[],"original_registrar":null,"original_dnshost":null,"modified_on":"2000-01-01T00:00:00.000000Z","created_on":"2000-01-01T00:00:00.000000Z","activated_on":"2000-01-01T00:00:00.000000Z","meta":{"step":0,"custom_certificate_quota":0,"page_rule_quota":0,"phishing_detected":false},"owner":{"id":null,"type":"user","email":null},"account":{"id":"","name":"Example account"},"tenant":{},"tenant_unit":{},"permissions":[],"plan":{"id":"","name":"","price":0,"currency":"","frequency":"","is_subscribed":false,"can_subscribe":false,"legacy_id":"","legacy_discount":false,"externally_managed":false}}],"result_info":{},"success":true,"errors":[],"messages":[]}"#,
+            )
+            .create_async()
+            .await;
+        let list_dns_mock = server
+            .mock("GET", format!("/zones/{ZONE_ID}/dns_records").as_str())
+            .match_query(Matcher::Missing)
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(r#"{"result":[],"result_info":{},"success":true,"errors":[],"messages":[]}"#)
+            .create_async()
+            .await;
+        let create_tunnel_mock = server
+            .mock("POST", "/accounts/account/cfd_tunnel")
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(
+                r#"{"result":{"id":"00000000-0000-0000-0000-000000000111","created_at":"2000-01-01T00:00:00.000000Z","deleted_at":null,"name":"prefix-demo","connections":[],"metadata":{}},"result_info":{},"success":true,"errors":[],"messages":[]}"#,
+            )
+            .create_async()
+            .await;
+        let create_dns_mock = server
+            .mock("POST", format!("/zones/{ZONE_ID}/dns_records").as_str())
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(
+                r#"{"result":{"id":"created-record","zone_id":"00000000000000000000000000000001","zone_name":"example.com","name":"app.example.com","type":"CNAME","content":"00000000-0000-0000-0000-000000000111.cfargotunnel.com","proxiable":true,"proxied":true,"ttl":1,"settings":{},"meta":{"auto_added":false,"managed_by_apps":false,"managed_by_argo_tunnel":false},"comment":null,"tags":[],"created_on":"2000-01-01T00:00:00.000000Z","modified_on":"2000-01-01T00:00:00.000000Z"},"result_info":{},"success":true,"errors":[],"messages":[]}"#,
+            )
+            .create_async()
+            .await;
+
+        let cfdt_api = Api::<CloudflaredTunnel>::namespaced(client.clone(), &namespace);
+        let resource_name = "demo";
+        cfdt_api
+            .create(
+                &PostParams::default(),
+                &managed_cloudflared_tunnel(resource_name, &namespace),
+            )
+            .await
+            .expect("CloudflaredTunnel should create");
+
+        let context = Context {
+            client: client.clone(),
+            args: ControllerArgs::new_for_test(None, "chalharu.top/cloudflared-ingress-controller"),
+            cloudflare_api: create_cloudflare_api(server.url().as_str()).await,
+        };
+
+        context
+            .reconcile()
+            .await
+            .expect("reconcile should provision kube resources");
+
+        let updated_resource = test_support::wait_for(
+            "CloudflaredTunnel status update",
+            Duration::from_secs(10),
+            || {
+                let cfdt_api = cfdt_api.clone();
+                async move {
+                    cfdt_api
+                        .get_opt(resource_name)
+                        .await
+                        .expect("CloudflaredTunnel lookup should succeed")
+                        .filter(|resource| {
+                            resource.status.as_ref().is_some_and(|status| {
+                                status.tunnel_id.is_some()
+                                    && status.config_secret_ref.is_some()
+                                    && status.tunnel_secret_ref.is_some()
+                            })
+                        })
+                }
+            },
+        )
+        .await;
+
+        let status = updated_resource
+            .status
+            .as_ref()
+            .expect("status should be written");
+        assert_eq!(
+            status.tunnel_id.as_deref(),
+            Some("00000000-0000-0000-0000-000000000111")
+        );
+
+        let deployment_api =
+            Api::<k8s_openapi::api::apps::v1::Deployment>::namespaced(client.clone(), &namespace);
+        let deployment = test_support::wait_for(
+            "cloudflared deployment creation",
+            Duration::from_secs(10),
+            || {
+                let deployment_api = deployment_api.clone();
+                async move {
+                    deployment_api
+                        .get_opt("demo-cloudflared")
+                        .await
+                        .expect("deployment lookup should succeed")
+                }
+            },
+        )
+        .await;
+        assert_eq!(
+            deployment.metadata.name.as_deref(),
+            Some("demo-cloudflared")
+        );
+
+        let secret_api =
+            Api::<k8s_openapi::api::core::v1::Secret>::namespaced(client.clone(), &namespace);
+        let config_secret_name = status
+            .config_secret_ref
+            .as_ref()
+            .expect("config secret ref should exist")
+            .clone();
+        let config_secret = test_support::wait_for(
+            "rendered config secret creation",
+            Duration::from_secs(10),
+            || {
+                let secret_api = secret_api.clone();
+                let config_secret_name = config_secret_name.clone();
+                async move {
+                    secret_api
+                        .get_opt(&config_secret_name)
+                        .await
+                        .expect("config secret lookup should succeed")
+                }
+            },
+        )
+        .await;
+        let config_data = config_secret.data.expect("config secret should have data");
+        assert!(config_data.contains_key(CFD_CONFIG_FILENAME));
+        assert!(config_data.contains_key("00000000-0000-0000-0000-000000000111.json"));
+
+        let tunnel_secret_name = status
+            .tunnel_secret_ref
+            .as_ref()
+            .expect("tunnel secret ref should exist")
+            .clone();
+        let tunnel_secret = secret_api
+            .get(&tunnel_secret_name)
+            .await
+            .expect("tunnel secret should exist");
+        assert!(
+            tunnel_secret
+                .data
+                .as_ref()
+                .expect("tunnel secret should have data")
+                .contains_key(TUNNEL_SECRET_KEY)
+        );
+
+        list_tunnels_mock.assert_async().await;
+        list_zones_mock.assert_async().await;
+        list_dns_mock.assert_async().await;
+        create_tunnel_mock.assert_async().await;
+        create_dns_mock.assert_async().await;
+
+        test_support::cleanup_namespace(&client, &namespace).await;
+    }
+
+    #[tokio::test]
+    async fn delete_tunnel_removes_dns_records_and_the_tunnel_with_mocked_cloudflare() {
+        let tunnel_id = "00000000-0000-0000-0000-000000000222";
+        let dns_record_id = "record-1";
+        let mut server = mockito::Server::new_async().await;
+        let get_tunnel_mock = server
+            .mock("GET", "/accounts/account/cfd_tunnel")
+            .match_query(Matcher::AllOf(vec![
+                Matcher::UrlEncoded("is_deleted".into(), "false".into()),
+                Matcher::UrlEncoded("uuid".into(), tunnel_id.into()),
+            ]))
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(
+                format!(
+                    r#"{{"result":[{{"id":"{tunnel_id}","created_at":"2000-01-01T00:00:00.000000Z","deleted_at":null,"name":"prefix-demo","connections":[],"metadata":{{}}}}],"result_info":{{}},"success":true,"errors":[],"messages":[]}}"#
+                ),
+            )
+            .create_async()
+            .await;
+        let list_zones_mock = server
+            .mock("GET", "/zones")
+            .match_query(Matcher::Any)
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(
+                r#"{"result":[{"id":"00000000000000000000000000000001","name":"example.com","status":"active","paused":false,"type":"full","development_mode":0,"name_servers":[],"original_name_servers":[],"original_registrar":null,"original_dnshost":null,"modified_on":"2000-01-01T00:00:00.000000Z","created_on":"2000-01-01T00:00:00.000000Z","activated_on":"2000-01-01T00:00:00.000000Z","meta":{"step":0,"custom_certificate_quota":0,"page_rule_quota":0,"phishing_detected":false},"owner":{"id":null,"type":"user","email":null},"account":{"id":"","name":"Example account"},"tenant":{},"tenant_unit":{},"permissions":[],"plan":{"id":"","name":"","price":0,"currency":"","frequency":"","is_subscribed":false,"can_subscribe":false,"legacy_id":"","legacy_discount":false,"externally_managed":false}}],"result_info":{},"success":true,"errors":[],"messages":[]}"#,
+            )
+            .create_async()
+            .await;
+        let list_dns_mock = server
+            .mock("GET", format!("/zones/{ZONE_ID}/dns_records").as_str())
+            .match_query(Matcher::AllOf(vec![
+                Matcher::UrlEncoded("type".into(), "CNAME".into()),
+                Matcher::UrlEncoded("content".into(), tunnel_cname(tunnel_id)),
+            ]))
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(
+                format!(
+                    r#"{{"result":[{{"id":"{dns_record_id}","zone_id":"{ZONE_ID}","zone_name":"example.com","name":"app.example.com","type":"CNAME","content":"{}.cfargotunnel.com","proxiable":true,"proxied":true,"ttl":1,"settings":{{}},"meta":{{"auto_added":false,"managed_by_apps":false,"managed_by_argo_tunnel":false}},"comment":null,"tags":[],"created_on":"2000-01-01T00:00:00.000000Z","modified_on":"2000-01-01T00:00:00.000000Z"}}],"result_info":{{}},"success":true,"errors":[],"messages":[]}}"#,
+                    tunnel_id
+                ),
+            )
+            .create_async()
+            .await;
+        let delete_dns_mock = server
+            .mock(
+                "DELETE",
+                format!("/zones/{ZONE_ID}/dns_records/{dns_record_id}").as_str(),
+            )
+            .with_status(201)
+            .with_header("content-type", "application/json")
+            .with_body(
+                r#"{"result":{"id":"00000000000000000000000000000001"},"result_info":{},"success":true,"errors":[],"messages":[]}"#,
+            )
+            .create_async()
+            .await;
+        let delete_tunnel_mock = server
+            .mock(
+                "DELETE",
+                format!("/accounts/account/cfd_tunnel/{tunnel_id}").as_str(),
+            )
+            .match_query(Matcher::UrlEncoded("cascade".into(), "false".into()))
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(
+                r#"{"result":{"id":"00000000000000000000000000000001"},"result_info":{},"success":true,"errors":[],"messages":[]}"#,
+            )
+            .create_async()
+            .await;
+
+        let context = Context {
+            client: test_client(),
+            args: ControllerArgs::new_for_test(None, "chalharu.top/cloudflared-ingress-controller"),
+            cloudflare_api: create_cloudflare_api(server.url().as_str()).await,
+        };
+        let mut resource = managed_cloudflared_tunnel("cleanup", "default");
+        resource.status = Some(CloudflaredTunnelStatus {
+            tunnel_id: Some(tunnel_id.to_string()),
+            ..Default::default()
+        });
+
+        context
+            .delete_tunnel(Arc::new(resource))
+            .await
+            .expect("cleanup should delete managed Cloudflare resources");
+
+        get_tunnel_mock.assert_async().await;
+        list_zones_mock.assert_async().await;
+        list_dns_mock.assert_async().await;
+        delete_dns_mock.assert_async().await;
+        delete_tunnel_mock.assert_async().await;
     }
 }
