@@ -16,6 +16,11 @@ on:
 permissions:
   contents: read
 
+env:
+  HELM_VERSION: v3.17.3
+  KIND_VERSION: v0.31.0
+  KUBECTL_VERSION: v1.35.0
+
 jobs:
   lint:
     runs-on: ubuntu-latest
@@ -25,7 +30,7 @@ jobs:
       - name: Set up Helm
         uses: Azure/setup-helm@1a275c3b69536ee54be43f2070a358922e12c8d4 # v4.3.1
         with:
-          version: v3.17.3
+          version: ${{ env.HELM_VERSION }}
       - name: Lint chart
         run: helm lint ./helm --strict
       - name: Render chart
@@ -73,9 +78,94 @@ jobs:
       - name: Set up Helm
         uses: Azure/setup-helm@1a275c3b69536ee54be43f2070a358922e12c8d4 # v4.3.1
         with:
-          version: v3.17.3
+          version: ${{ env.HELM_VERSION }}
+      - name: Prime kind tool cache
+        run: |
+          set -euo pipefail
+
+          case "$(uname -m)" in
+            x86_64) arch=amd64 ;;
+            aarch64|arm64) arch=arm64 ;;
+            *)
+              echo "Unsupported architecture: $(uname -m)" >&2
+              exit 1
+              ;;
+          esac
+
+          cache_dir="${RUNNER_TOOL_CACHE}/kind/${KIND_VERSION}/${arch}"
+          kind_dir="${cache_dir}/kind/bin"
+          kubectl_dir="${cache_dir}/kubectl/bin"
+          mkdir -p "${kind_dir}" "${kubectl_dir}"
+
+          install_kind() {
+            local binary_path="${kind_dir}/kind"
+            local download_path="${kind_dir}/kind-linux-${arch}"
+            local checksum_path="${download_path}.sha256sum"
+
+            [ -x "${binary_path}" ] && return 0
+
+            for attempt in 1 2 3; do
+              rm -f "${download_path}" "${checksum_path}"
+              curl --fail --show-error --silent --location \
+                --retry 3 --retry-all-errors \
+                -o "${download_path}" \
+                "https://github.com/kubernetes-sigs/kind/releases/download/${KIND_VERSION}/kind-linux-${arch}"
+              curl --fail --show-error --silent --location \
+                --retry 3 --retry-all-errors \
+                -o "${checksum_path}" \
+                "https://github.com/kubernetes-sigs/kind/releases/download/${KIND_VERSION}/kind-linux-${arch}.sha256sum"
+
+              if (cd "${kind_dir}" && grep -F "kind-linux-${arch}" "$(basename "${checksum_path}")" | sha256sum -c -); then
+                mv "${download_path}" "${binary_path}"
+                chmod +x "${binary_path}"
+                rm -f "${checksum_path}"
+                return 0
+              fi
+
+              sleep $((attempt * 2))
+            done
+
+            echo "Failed to cache kind ${KIND_VERSION}" >&2
+            exit 1
+          }
+
+          install_kubectl() {
+            local binary_path="${kubectl_dir}/kubectl"
+            local checksum_path="${kubectl_dir}/kubectl.sha256"
+
+            [ -x "${binary_path}" ] && return 0
+
+            for attempt in 1 2 3; do
+              rm -f "${binary_path}" "${checksum_path}"
+              curl --fail --show-error --silent --location \
+                --retry 3 --retry-all-errors \
+                -o "${binary_path}" \
+                "https://dl.k8s.io/release/${KUBECTL_VERSION}/bin/linux/${arch}/kubectl"
+              curl --fail --show-error --silent --location \
+                --retry 3 --retry-all-errors \
+                -o "${checksum_path}" \
+                "https://dl.k8s.io/release/${KUBECTL_VERSION}/bin/linux/${arch}/kubectl.sha256"
+
+              if printf '%s  kubectl\n' "$(cat "${checksum_path}")" | (cd "${kubectl_dir}" && sha256sum -c -); then
+                chmod +x "${binary_path}"
+                rm -f "${checksum_path}"
+                return 0
+              fi
+
+              sleep $((attempt * 2))
+            done
+
+            echo "Failed to cache kubectl ${KUBECTL_VERSION}" >&2
+            exit 1
+          }
+
+          install_kind
+          install_kubectl
       - name: Create kind cluster
         uses: helm/kind-action@ef37e7f390d99f746eb8b610417061a60e82a6cc # v1.14.0
+        with:
+          version: ${{ env.KIND_VERSION }}
+          kubectl_version: ${{ env.KUBECTL_VERSION }}
       - name: Validate rendered manifests against the API server
         run: |
           kubectl create namespace cloudflared-ingress-system
@@ -96,7 +186,7 @@ jobs:
           kubectl get crd cloudflaredtunnels.chalharu.top
 
   release:
-    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+    if: startsWith(github.ref, 'refs/tags/v') && (github.event_name == 'push' || github.event_name == 'workflow_dispatch')
     runs-on: ubuntu-latest
     needs:
       - lint
@@ -112,9 +202,9 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v6.0.2
       - name: Set up Helm
-        uses: Azure/setup-helm@b9e51907a09c216f16ebe8536097933489208112 # v4.3.0
+        uses: Azure/setup-helm@1a275c3b69536ee54be43f2070a358922e12c8d4 # v4.3.1
         with:
-          version: v3.17.3
+          version: ${{ env.HELM_VERSION }}
       - name: Determine release version
         id: version
         env:
