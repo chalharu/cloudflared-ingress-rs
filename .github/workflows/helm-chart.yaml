@@ -35,9 +35,19 @@ jobs:
         run: helm lint ./helm --strict
       - name: Render chart
         run: helm template cloudflared-ingress ./helm --namespace cloudflared-ingress-system >/tmp/cloudflared-ingress-rendered.yaml
-      - name: Verify dev chart defaults to the latest image tag
+      - name: Determine expected default image tag
+        id: expected-default-image
         run: |
-          grep -F 'image: "ghcr.io/chalharu/cloudflared-ingress-rs:latest"' /tmp/cloudflared-ingress-rendered.yaml
+          app_version="$(sed -n 's/^appVersion:[[:space:]]*//p' helm/Chart.yaml | tr -d '"')"
+          if [[ "${app_version}" == *-dev* ]]; then
+            expected_tag=latest
+          else
+            expected_tag="${app_version}"
+          fi
+          echo "tag=${expected_tag}" >> "${GITHUB_OUTPUT}"
+      - name: Verify checked-out chart defaults to the expected image tag
+        run: |
+          grep -F "image: \"ghcr.io/chalharu/cloudflared-ingress-rs:${{ steps.expected-default-image.outputs.tag }}\"" /tmp/cloudflared-ingress-rendered.yaml
       - name: Verify explicit image tag override
         run: |
           helm template cloudflared-ingress ./helm \
