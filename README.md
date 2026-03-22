@@ -154,6 +154,7 @@ bash .github/skills/containerized-rust-ops/scripts/podman-rust.sh clippy
 - Release tags are the source of truth for published versions. Because `main` remains pull-request-only, the checked-in version metadata on `main` may lag behind the latest release tag and may intentionally use a `-dev` suffix as long as the repository still builds correctly.
 - The Helm chart defaults to `latest` while the checked-in `appVersion` carries a `-dev` suffix on `main`; release-tagged charts default to the matching semantic version unless `image.tag` is overridden.
 - Release tags also publish the Helm chart to GHCR as an OCI artifact at `oci://ghcr.io/chalharu/charts/cloudflared-ingress`.
+- Because GitHub suppresses downstream `push` workflows triggered by the default `GITHUB_TOKEN`, the semver release workflow explicitly dispatches the Helm chart workflow on the new tag.
 - Docker publishes `latest` and `sha-*` tags from `main`, semantic version tags from release tags, and prunes older non-semver or untagged GHCR versions while retaining the newest configured set.
 
 GitHub Actions also runs SonarQube Cloud analysis via `.github/workflows/sonarqube-cloud.yaml`. That workflow targets the checked-in `chalharu_cloudflared-ingress-rs` project, generates Rust coverage with `cargo llvm-cov`, imports `target/llvm-cov/lcov.info`, and expects the `SONAR_TOKEN` repository secret to remain configured.
