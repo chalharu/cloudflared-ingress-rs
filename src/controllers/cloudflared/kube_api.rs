@@ -556,6 +556,21 @@ mod tests {
         ));
     }
 
+    fn test_cloudflared_tunnel(namespace: &str, name: &str) -> CloudflaredTunnel {
+        CloudflaredTunnel {
+            metadata: ObjectMeta {
+                name: Some(name.to_string()),
+                namespace: Some(namespace.to_string()),
+                ..Default::default()
+            },
+            spec: CloudflaredTunnelSpec {
+                default_ingress_service: "http_status:404".to_string(),
+                ..Default::default()
+            },
+            status: None,
+        }
+    }
+
     #[tokio::test]
     async fn kind_patch_helpers_manage_live_kubernetes_resources() {
         let Some(client) = test_support::kind_client().await else {
@@ -571,24 +586,28 @@ mod tests {
                 let namespace = namespace.clone();
                 move || async move {
                     let cfdt_api = Api::<CloudflaredTunnel>::namespaced(client.clone(), &namespace);
-                    cfdt_api
+                    let owner = cfdt_api
                         .create(
                             &PostParams::default(),
-                            &CloudflaredTunnel {
-                                metadata: ObjectMeta {
-                                    name: Some("demo".to_string()),
-                                    namespace: Some(namespace.clone()),
-                                    ..Default::default()
-                                },
-                                spec: CloudflaredTunnelSpec {
-                                    default_ingress_service: "http_status:404".to_string(),
-                                    ..Default::default()
-                                },
-                                status: None,
-                            },
+                            &test_cloudflared_tunnel(&namespace, "demo"),
                         )
                         .await
                         .expect("CloudflaredTunnel should create");
+                    let migrated_owner = cfdt_api
+                        .create(
+                            &PostParams::default(),
+                            &test_cloudflared_tunnel(&namespace, "demo-migrated"),
+                        )
+                        .await
+                        .expect("migrated CloudflaredTunnel should create");
+
+                    // Use live owner UIDs so Kubernetes GC does not treat dependents as dangling.
+                    let owner_ref = super::super::cloudflared_owner_reference(&owner)
+                        .expect("owner reference should build");
+                    let migrated_owner_ref =
+                        super::super::cloudflared_owner_reference(&migrated_owner)
+                            .expect("migrated owner reference should build");
+                    assert_ne!(owner_ref.uid, migrated_owner_ref.uid);
 
                     let resources = get_cloudflaredtunnel(&client)
                         .await
@@ -633,7 +652,7 @@ mod tests {
                             "config-secret",
                             &namespace,
                             BTreeMap::from([("config.yml".to_string(), "value".to_string())]),
-                            Some(vec![owner_reference()]),
+                            Some(vec![owner_ref.clone()]),
                         )
                         .await
                         .expect("secret creation should succeed")
@@ -644,7 +663,7 @@ mod tests {
                             "config-secret",
                             &namespace,
                             BTreeMap::from([("config.yml".to_string(), "value".to_string())]),
-                            Some(vec![owner_reference()]),
+                            Some(vec![owner_ref.clone()]),
                         )
                         .await
                         .expect("unchanged secret patch should succeed")
@@ -658,7 +677,7 @@ mod tests {
                         "tunnel-id",
                         1,
                         &CloudflaredTunnelSpec::default(),
-                        Some(vec![owner_reference()]),
+                        Some(vec![owner_ref.clone()]),
                     )
                     .await
                     .expect("deployment creation should succeed");
@@ -671,7 +690,7 @@ mod tests {
                         "tunnel-id",
                         1,
                         &CloudflaredTunnelSpec::default(),
-                        Some(vec![owner_reference()]),
+                        Some(vec![owner_ref.clone()]),
                     )
                     .await
                     .expect("unchanged deployment patch should succeed");
@@ -685,10 +704,7 @@ mod tests {
                         "tunnel-id",
                         1,
                         &CloudflaredTunnelSpec::default(),
-                        Some(vec![OwnerReference {
-                            uid: "uid-2".to_string(),
-                            ..owner_reference()
-                        }]),
+                        Some(vec![migrated_owner_ref.clone()]),
                     )
                     .await
                     .expect("selector migration patch should succeed");
@@ -706,7 +722,7 @@ mod tests {
                             .and_then(|spec| spec.selector.match_labels.as_ref())
                             .and_then(|labels| labels.get(SELECTOR_ID_LABEL))
                             .map(String::as_str),
-                        Some("uid-2")
+                        Some(migrated_owner_ref.uid.as_str())
                     );
 
                     let restarted = restart_deployment(&client, "demo-cloudflared", &namespace)

@@ -1,0 +1,61 @@
+name: Helm chart CI
+
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - 'helm/**'
+      - '.github/workflows/helm-chart.yaml'
+  push:
+    branches: [ "main" ]
+    paths:
+      - 'helm/**'
+      - '.github/workflows/helm-chart.yaml'
+
+permissions:
+  contents: read
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6.0.2
+      - name: Set up Helm
+        uses: Azure/setup-helm@b9e51907a09c216f16ebe8536097933489208112 # v4.3.0
+        with:
+          version: v3.17.3
+      - name: Lint chart
+        run: helm lint ./helm --strict
+      - name: Render chart
+        run: helm template cloudflared-ingress ./helm --namespace cloudflared-ingress-system >/tmp/cloudflared-ingress-rendered.yaml
+
+  install-kind:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6.0.2
+      - name: Set up Helm
+        uses: Azure/setup-helm@b9e51907a09c216f16ebe8536097933489208112 # v4.3.0
+        with:
+          version: v3.17.3
+      - name: Create kind cluster
+        uses: helm/kind-action@ef37e7f390d99f746eb8b610417061a60e82a6cc # v1.14.0
+      - name: Validate rendered manifests against the API server
+        run: |
+          kubectl create namespace cloudflared-ingress-system
+          helm template cloudflared-ingress ./helm --namespace cloudflared-ingress-system >/tmp/cloudflared-ingress-rendered.yaml
+          kubectl apply --dry-run=server -f /tmp/cloudflared-ingress-rendered.yaml
+      - name: Install chart
+        run: |
+          helm install cloudflared-ingress ./helm \
+            --namespace cloudflared-ingress-system \
+            --create-namespace
+      - name: Verify installed resources
+        run: |
+          kubectl get deployment -n cloudflared-ingress-system cloudflared-ingress-controller
+          kubectl get serviceaccount -n cloudflared-ingress-system cloudflared-ingress
+          kubectl get clusterrole cloudflared-ingress
+          kubectl get clusterrolebinding cloudflared-ingress
+          kubectl get ingressclass cloudflared
+          kubectl get crd cloudflaredtunnels.chalharu.top

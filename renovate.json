@@ -3,6 +3,12 @@
   "extends": [
     "github>chalharu/renovate-config"
   ],
+  "minimumReleaseAge": "3 days",
+  "automergeStrategy": "auto",
+  "vulnerabilityAlerts": {
+    "enabled": true,
+    "minimumReleaseAge": null
+  },
   "packageRules": [
     {
       "matchManagers": [
