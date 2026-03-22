@@ -57,6 +57,8 @@ jobs:
         with:
           images: |
             ${{ env.IMAGE_NAME }}
+          flavor: |
+            latest=false
           tags: |
             type=raw,value=latest,enable=${{ github.ref == 'refs/heads/main' }}
             type=sha,format=long,enable=${{ github.ref == 'refs/heads/main' }}
@@ -136,6 +138,8 @@ jobs:
         with:
           images: |
             ${{ env.IMAGE_NAME }}
+          flavor: |
+            latest=false
           tags: |
             type=raw,value=latest,enable=${{ github.ref == 'refs/heads/main' }}
             type=sha,format=long,enable=${{ github.ref == 'refs/heads/main' }}
