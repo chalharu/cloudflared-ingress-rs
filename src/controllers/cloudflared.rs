@@ -504,23 +504,13 @@ impl Context {
 
         // ZoneIDからDNSレコードを引く辞書を作成
         let zone_dns_list = try_join_all(zones.iter().map(|z| async {
-            Result::<_, Error>::Ok(
-                self.cloudflare_api
-                    .list_dns(z.id.as_str())
-                    .await?
-                    .into_iter()
-                    .fold(
-                        HashMap::new(),
-                        |mut acc: HashMap<String, Vec<DnsRecord>>, value| {
-                            acc.entry(z.id.clone()).or_default().push(value);
-                            acc
-                        },
-                    ),
-            )
+            Result::<_, Error>::Ok((
+                z.id.clone(),
+                self.cloudflare_api.list_dns(z.id.as_str()).await?,
+            ))
         }))
         .await?
         .into_iter()
-        .flat_map(|x| x.into_iter())
         .collect::<HashMap<_, _>>();
 
         let tunnel_secret = self.get_tunnel_secret(&cfdt, owner_ref.clone()).await?;
@@ -1301,6 +1291,17 @@ mod tests {
             validate_tunnel_secret(vec![7; 32]).expect("32-byte secret should be accepted"),
             vec![7; 32]
         );
+    }
+
+    #[test]
+    fn zone_dns_list_preserves_entries_for_empty_record_sets() {
+        let zone_id = "zone-a".to_string();
+        let zone_dns_list = vec![(zone_id.clone(), Vec::<DnsRecord>::new())]
+            .into_iter()
+            .collect::<HashMap<_, _>>();
+
+        assert!(zone_dns_list.contains_key(&zone_id));
+        assert!(zone_dns_list.get(&zone_id).is_some_and(Vec::is_empty));
     }
 
     fn managed_cloudflared_tunnel(name: &str, namespace: &str) -> CloudflaredTunnel {
