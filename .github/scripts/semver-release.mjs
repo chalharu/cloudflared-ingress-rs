@@ -40,14 +40,26 @@ export function parseSemver(version) {
 	};
 }
 
-export function selectSemverBump(labels) {
+export function selectSemverBump(labels, defaultBump) {
 	const matched = labels.filter((label) => SEMVER_LABELS.includes(label));
+
+	if (matched.length === 0) {
+		if (defaultBump) {
+			if (!["major", "minor", "patch"].includes(defaultBump)) {
+				throw new Error(`unsupported default semver bump kind: ${defaultBump}`);
+			}
+
+			return defaultBump;
+		}
+
+		throw new Error(
+			`expected exactly one semver label (${SEMVER_LABELS.join(", ")}), found: none`,
+		);
+	}
 
 	if (matched.length !== 1) {
 		throw new Error(
-			`expected exactly one semver label (${SEMVER_LABELS.join(", ")}), found: ${
-				matched.length === 0 ? "none" : matched.join(", ")
-			}`,
+			`expected exactly one semver label (${SEMVER_LABELS.join(", ")}), found: ${matched.join(", ")}`,
 		);
 	}
 
@@ -207,7 +219,8 @@ export async function bumpProjectVersionFromEnv() {
 		readJsonEnv("PR_LABELS_JSON"),
 		"PR_LABELS_JSON",
 	);
-	const bump = selectSemverBump(labels);
+	const defaultBump = process.env.DEFAULT_SEMVER_BUMP;
+	const bump = selectSemverBump(labels, defaultBump);
 	const cargoTomlPath = process.env.CARGO_TOML_PATH ?? "Cargo.toml";
 	const cargoLockPath = process.env.CARGO_LOCK_PATH ?? "Cargo.lock";
 	const chartPath = process.env.CHART_PATH ?? "helm/Chart.yaml";

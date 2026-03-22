@@ -44,6 +44,7 @@ jobs:
         id: bump
         env:
           CURRENT_VERSION: ${{ steps.current-version.outputs.current_version }}
+          DEFAULT_SEMVER_BUMP: patch
           PR_LABELS_JSON: ${{ toJson(github.event.pull_request.labels.*.name) }}
         run: node .github/scripts/semver-release.mjs bump
       - name: Commit release

@@ -33,8 +33,9 @@ version: 0.1.2
 appVersion: "0.1.2"
 `;
 
-test("selectSemverBump requires exactly one release label", () => {
+test("selectSemverBump requires exactly one release label unless a default is supplied", () => {
 	assert.equal(selectSemverBump(["docs", "semver:patch"]), "patch");
+	assert.equal(selectSemverBump(["docs"], "patch"), "patch");
 	assert.throws(
 		() => selectSemverBump(["semver:major", "semver:minor"]),
 		/expected exactly one semver label/,
@@ -42,6 +43,10 @@ test("selectSemverBump requires exactly one release label", () => {
 	assert.throws(
 		() => selectSemverBump(["docs"]),
 		/expected exactly one semver label/,
+	);
+	assert.throws(
+		() => selectSemverBump(["docs"], "bogus"),
+		/unsupported default semver bump kind/,
 	);
 });
 
