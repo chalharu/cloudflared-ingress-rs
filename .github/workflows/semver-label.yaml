@@ -54,6 +54,6 @@ jobs:
           }
 
           console.log(
-            "no semver label is set yet; review-time checks stay green and merge-time release defaults to semver:patch",
+            "no semver label is set yet; review-time checks stay green and merge-time release defaults to semver:patch only when release-impacting files changed",
           );
           EOF
