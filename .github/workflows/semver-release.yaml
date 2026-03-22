@@ -104,6 +104,29 @@ jobs:
 
             sleep $((attempt * 2))
           done
+      - name: Dispatch Docker image workflow for release tag
+        if: steps.release-guard.outputs.already_released != 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          VERSION: ${{ steps.bump.outputs.version }}
+        run: |
+          set -euo pipefail
+          for attempt in 1 2 3; do
+            if gh api \
+              --method POST \
+              -H "Accept: application/vnd.github+json" \
+              "/repos/${GITHUB_REPOSITORY}/actions/workflows/docker-image.yaml/dispatches" \
+              -f ref="v${VERSION}"; then
+              exit 0
+            fi
+
+            if [ "${attempt}" -eq 3 ]; then
+              echo "Failed to dispatch docker-image.yaml for v${VERSION}" >&2
+              exit 1
+            fi
+
+            sleep $((attempt * 2))
+          done
       - name: Release already exists
         if: steps.release-guard.outputs.already_released == 'true'
         run: echo "Skipping release because current main already has a semver tag."
