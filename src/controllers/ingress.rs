@@ -285,11 +285,7 @@ fn ingress_rule_values(spec: &IngressSpec) -> Result<Vec<(Option<String>, HTTPIn
     let rules = spec.rules.as_deref().unwrap_or_default();
 
     if rules.is_empty() {
-        return if default_backend.is_some() {
-            Err(Error::illegal_document())
-        } else {
-            Ok(Vec::new())
-        };
+        return Ok(Vec::new());
     }
 
     let mut values = Vec::with_capacity(rules.len());
@@ -821,8 +817,8 @@ mod tests {
     }
 
     #[test]
-    fn ingress_rule_values_rejects_default_backend_without_host_rules() {
-        let result = ingress_rule_values(&IngressSpec {
+    fn ingress_rule_values_ignores_default_backend_without_host_rules() {
+        let values = ingress_rule_values(&IngressSpec {
             default_backend: Some(IngressBackend {
                 service: Some(IngressServiceBackend {
                     name: "api".to_string(),
@@ -834,9 +830,10 @@ mod tests {
                 resource: None,
             }),
             ..Default::default()
-        });
+        })
+        .expect("default backend without host rules should be ignored");
 
-        assert!(matches!(result, Err(Error::IllegalDocument { .. })));
+        assert!(values.is_empty());
     }
 
     #[test]
@@ -886,7 +883,7 @@ mod tests {
     }
 
     #[test]
-    fn build_tunnel_ingresses_for_ingress_rejects_default_backend_without_host_rules() {
+    fn build_tunnel_ingresses_for_ingress_ignores_default_backend_without_host_rules() {
         let services = HashMap::from([(
             "api.default.svc".to_string(),
             HashMap::from([("https".to_string(), 8443)]),
@@ -913,9 +910,10 @@ mod tests {
             ..Default::default()
         };
 
-        let result = build_tunnel_ingresses_for_ingress(ingress, &services);
+        let rendered = build_tunnel_ingresses_for_ingress(ingress, &services)
+            .expect("default backend without host rules should be ignored");
 
-        assert!(matches!(result, Err(Error::IllegalDocument { .. })));
+        assert!(rendered.is_empty());
     }
 
     #[test]
@@ -1114,6 +1112,44 @@ mod tests {
         assert_eq!(rendered.len(), 2);
         assert_eq!(rendered[0].hostname, "one.example.com");
         assert_eq!(rendered[1].hostname, "two.example.com");
+    }
+
+    #[test]
+    fn collect_tunnel_ingresses_ignores_default_backend_only_ingresses() {
+        let services = HashMap::from([(
+            "api.default.svc".to_string(),
+            HashMap::from([("https".to_string(), 8443)]),
+        )]);
+        let ingresses = vec![
+            Ingress {
+                metadata: ObjectMeta {
+                    name: Some("default-backend-only".to_string()),
+                    namespace: Some("default".to_string()),
+                    ..Default::default()
+                },
+                spec: Some(IngressSpec {
+                    default_backend: Some(IngressBackend {
+                        service: Some(IngressServiceBackend {
+                            name: "api".to_string(),
+                            port: Some(ServiceBackendPort {
+                                name: Some("https".to_string()),
+                                number: None,
+                            }),
+                        }),
+                        resource: None,
+                    }),
+                    ..Default::default()
+                }),
+                ..Default::default()
+            },
+            ingress_with_rules(Some("one.example.com"), "default", Vec::new(), None, None),
+        ];
+
+        let rendered = collect_tunnel_ingresses(ingresses, &services)
+            .expect("default-backend-only ingresses should be ignored");
+
+        assert_eq!(rendered.len(), 1);
+        assert_eq!(rendered[0].hostname, "one.example.com");
     }
 
     #[test]
