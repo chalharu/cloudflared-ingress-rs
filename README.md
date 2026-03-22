@@ -45,7 +45,7 @@ kubectl -n cloudflared-ingress-system create secret generic cloudflare-credentia
   --from-literal=ACCOUNT_TOKEN=<cloudflare-api-token>
 ```
 
-The chart passes `ACCOUNT_ID` and `ACCOUNT_TOKEN` into the controller CLI. Optional settings such as `INGRESS_CLASS`, `INGRESS_CONTROLLER`, or `CLOUDFLARE_TUNNEL_NAMESPACE` can be provided through chart `env` or `envFrom` values.
+For a chart install, the required credential environment variables are `ACCOUNT_ID` and `ACCOUNT_TOKEN`. The chart passes those values to the controller's `--cloudflare-account-id` and `--cloudflare-token` arguments. Optional settings such as `INGRESS_CLASS`, `INGRESS_CONTROLLER`, or `CLOUDFLARE_TUNNEL_NAMESPACE` can be provided through chart `env` or `envFrom` values.
 
 By default, the controller writes `CloudflaredTunnel`, Secret, and managed `cloudflared` resources into the `cloudflared` namespace. The quick start below keeps those resources in the install namespace instead.
 
@@ -132,7 +132,9 @@ kubectl describe cloudflaredtunnel <name> -n <namespace>
 
 ## Configuration reference
 
-When you run the binary directly, every CLI flag also has an environment variable. When you install with Helm, set optional controller values through chart `env` or `envFrom`.
+### Running the binary directly
+
+The table below is for invoking the controller binary yourself. In that mode, every CLI flag also has a clap-provided environment variable.
 
 | Purpose | CLI flag | Environment variable | Default |
 | --- | --- | --- | --- |
@@ -144,7 +146,9 @@ When you run the binary directly, every CLI flag also has an environment variabl
 | Namespace for managed `cloudflared` resources | `--cloudflare-tunnel-namespace` | `CLOUDFLARE_TUNNEL_NAMESPACE` | `cloudflared` |
 | Replica count for the managed `cloudflared` Deployment | `--deployment-replicas` | `DEPLOYMENT_REPLICAS` | `1` |
 
-For the published Helm chart, provide the required credentials as container environment variables named `ACCOUNT_ID` and `ACCOUNT_TOKEN`, because the chart passes them to the controller as CLI arguments.
+### Required credentials for the published Helm chart
+
+For the published Helm chart and the quick start above, the required container environment variables are `ACCOUNT_ID` and `ACCOUNT_TOKEN`. These are the names end users should place in their Secret or `env` and `envFrom` configuration. The chart then forwards those values to the controller as CLI arguments.
 
 If you leave `CLOUDFLARE_TUNNEL_NAMESPACE` at its default `cloudflared`, make sure that namespace exists before the controller reconciles resources.
 

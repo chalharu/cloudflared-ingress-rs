@@ -42,6 +42,8 @@ cargo run -- run \
   --cloudflare-account-id "$CLOUDFLARE_ACCOUNT_ID"
 ```
 
+When you run the binary directly without flags, clap also accepts `CLOUDFLARE_TOKEN` and `CLOUDFLARE_ACCOUNT_ID`. In the published Helm deployment, the required credential environment variable names are still `ACCOUNT_ID` and `ACCOUNT_TOKEN`, because the chart maps those values into CLI arguments.
+
 Optional controller behavior can be configured with flags or environment variables such as:
 
 - `INGRESS_CLASS`
