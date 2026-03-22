@@ -45,9 +45,7 @@ kubectl -n cloudflared-ingress-system create secret generic cloudflare-credentia
   --from-literal=ACCOUNT_TOKEN=<cloudflare-api-token>
 ```
 
-For a chart install, the required credential environment variables are `ACCOUNT_ID` and `ACCOUNT_TOKEN`. The chart passes those values to the controller's `--cloudflare-account-id` and `--cloudflare-token` arguments. Optional settings such as `INGRESS_CLASS`, `INGRESS_CONTROLLER`, or `CLOUDFLARE_TUNNEL_NAMESPACE` can be provided through chart `env` or `envFrom` values.
-
-By default, the controller writes `CloudflaredTunnel`, Secret, and managed `cloudflared` resources into the `cloudflared` namespace. The quick start below keeps those resources in the install namespace instead.
+For a chart install, the required credential environment variables are `ACCOUNT_ID` and `ACCOUNT_TOKEN`. The chart passes those values to the controller's `--cloudflare-account-id` and `--cloudflare-token` arguments. Optional settings such as `INGRESS_CLASS`, `INGRESS_CONTROLLER`, or `CLOUDFLARE_TUNNEL_NAMESPACE` can be provided through chart `env` or `envFrom` values when you want to override the defaults.
 
 ### 2. Install the chart
 
@@ -60,9 +58,6 @@ cat <<'EOF' | helm upgrade --install cloudflared-ingress oci://ghcr.io/chalharu/
 envFrom:
   - secretRef:
       name: cloudflare-credentials
-env:
-  - name: CLOUDFLARE_TUNNEL_NAMESPACE
-    value: cloudflared-ingress-system
 EOF
 ```
 
