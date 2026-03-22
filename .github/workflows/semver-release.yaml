@@ -16,9 +16,7 @@ jobs:
     if: github.event.pull_request.merged == true && github.event.pull_request.base.ref == 'main'
     runs-on: ubuntu-latest
     permissions:
-      actions: write
       contents: write
-      pull-requests: write
     steps:
       - name: Checkout main
         uses: actions/checkout@v6.0.2
@@ -33,147 +31,55 @@ jobs:
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
       - name: Refresh main
         run: git pull --ff-only origin main
-      - name: Publish missing tag from merged release PR
-        if: startsWith(github.event.pull_request.head.ref, 'release/')
+      - name: Detect existing release tag for current main
+        id: release-guard
         run: |
           set -euo pipefail
-          version="$(node .github/scripts/semver-release.mjs current-version)"
-          release_commit="${{ github.event.pull_request.head.sha }}"
-          if git rev-parse -q --verify "refs/tags/v${version}" >/dev/null; then
-            echo "Release tag v${version} already exists."
+          latest_tag="$(git tag --list 'v*.*.*' --sort=-v:refname | head -n 1)"
+          head_commit="$(git rev-parse HEAD)"
+          latest_release_commit=""
+          latest_release_parent=""
+          if [ -n "${latest_tag}" ]; then
+            latest_release_commit="$(git rev-parse "${latest_tag}^{commit}")"
+            latest_release_parent="$(git rev-parse "${latest_tag}^{commit}^" 2>/dev/null || true)"
+          fi
+          if [ "${latest_release_commit}" = "${head_commit}" ] || [ "${latest_release_parent}" = "${head_commit}" ]; then
+            echo "already_released=true" >> "${GITHUB_OUTPUT}"
+            echo "Current main already has release tag ${latest_tag}."
             exit 0
           fi
-          if ! git cat-file -e "${release_commit}^{commit}" 2>/dev/null; then
-            git fetch --no-tags origin "refs/pull/${{ github.event.pull_request.number }}/head"
-            release_commit="$(git rev-parse FETCH_HEAD)"
-          fi
-          git tag -a "v${version}" "${release_commit}" -m "v${version}"
-          git push origin "refs/tags/v${version}"
-      - name: Detect release state for current main
-        id: release-state
-        if: ${{ !startsWith(github.event.pull_request.head.ref, 'release/') }}
+          echo "already_released=false" >> "${GITHUB_OUTPUT}"
+      - name: Determine current release version
+        id: current-version
+        if: steps.release-guard.outputs.already_released != 'true'
         run: |
           set -euo pipefail
           latest_tag="$(git tag --list 'v*.*.*' --sort=-v:refname | head -n 1)"
           if [ -n "${latest_tag}" ]; then
-            current_version="${latest_tag#v}"
-          else
-            current_version="$(node .github/scripts/semver-release.mjs current-version)"
+            echo "current_version=${latest_tag#v}" >> "${GITHUB_OUTPUT}"
           fi
-          echo "current_version=${current_version}" >> "${GITHUB_OUTPUT}"
-          if [ -z "${latest_tag}" ]; then
-            echo "state=needs-release" >> "${GITHUB_OUTPUT}"
-            exit 0
-          fi
-          head_commit="$(git rev-parse HEAD)"
-          latest_release_commit="$(git rev-parse "${latest_tag}^{commit}")"
-          latest_release_parent="$(git rev-parse "${latest_tag}^{commit}^" 2>/dev/null || true)"
-          if [ "${latest_release_commit}" = "${head_commit}" ]; then
-            echo "state=tagged-main" >> "${GITHUB_OUTPUT}"
-            echo "Current main is already tagged as ${latest_tag}."
-            exit 0
-          fi
-          if [ "${latest_release_parent}" = "${head_commit}" ]; then
-            echo "state=pending-sync" >> "${GITHUB_OUTPUT}"
-            echo "version=${latest_tag#v}" >> "${GITHUB_OUTPUT}"
-            echo "branch=release/next" >> "${GITHUB_OUTPUT}"
-            echo "Current main already has release tag ${latest_tag}; refreshing the sync branch and PR."
-            exit 0
-          fi
-          echo "state=needs-release" >> "${GITHUB_OUTPUT}"
-      - name: Determine requested bump
-        id: requested-bump
-        if: steps.release-state.outputs.state == 'needs-release'
-        env:
-          DEFAULT_SEMVER_BUMP: patch
-          PR_LABELS_JSON: ${{ toJson(github.event.pull_request.labels.*.name) }}
-        run: node .github/scripts/semver-release.mjs select-bump
       - name: Bump project version
         id: bump
-        if: steps.release-state.outputs.state == 'needs-release'
+        if: steps.release-guard.outputs.already_released != 'true'
         env:
-          CURRENT_VERSION: ${{ steps.release-state.outputs.current_version }}
-          DEFAULT_SEMVER_BUMP: ${{ steps.requested-bump.outputs.bump }}
-          PR_LABELS_JSON: '[]'
+          CURRENT_VERSION: ${{ steps.current-version.outputs.current_version }}
+          DEFAULT_SEMVER_BUMP: patch
+          PR_LABELS_JSON: ${{ toJson(github.event.pull_request.labels.*.name) }}
         run: node .github/scripts/semver-release.mjs bump
-      - name: Create release branch
-        id: release-branch
-        if: steps.release-state.outputs.state == 'needs-release'
+      - name: Create release tag
+        if: steps.release-guard.outputs.already_released != 'true'
         env:
           VERSION: ${{ steps.bump.outputs.version }}
-        run: |
-          set -euo pipefail
-          release_branch="release/next"
-          git switch -C "${release_branch}"
-          git add Cargo.toml Cargo.lock helm/Chart.yaml
-          git commit -m "chore(release): v${VERSION}"
-          git push --force-with-lease origin "HEAD:${release_branch}"
-          echo "branch=${release_branch}" >> "${GITHUB_OUTPUT}"
-          echo "version=${VERSION}" >> "${GITHUB_OUTPUT}"
-      - name: Recreate sync branch for pending release
-        id: recovery-branch
-        if: steps.release-state.outputs.state == 'pending-sync'
-        env:
-          VERSION: ${{ steps.release-state.outputs.version }}
-          RELEASE_BRANCH: ${{ steps.release-state.outputs.branch }}
-        run: |
-          set -euo pipefail
-          git branch -f "${RELEASE_BRANCH}" "refs/tags/v${VERSION}^{commit}"
-          git push --force-with-lease origin "${RELEASE_BRANCH}:${RELEASE_BRANCH}"
-          echo "branch=${RELEASE_BRANCH}" >> "${GITHUB_OUTPUT}"
-          echo "version=${VERSION}" >> "${GITHUB_OUTPUT}"
-      - name: Open or update version sync PR
-        if: steps.release-state.outputs.state == 'needs-release' || steps.release-state.outputs.state == 'pending-sync'
-        env:
-          GH_TOKEN: ${{ github.token }}
-          NEW_BRANCH: ${{ steps.release-branch.outputs.branch }}
-          NEW_VERSION: ${{ steps.release-branch.outputs.version }}
-          RECOVERY_BRANCH: ${{ steps.recovery-branch.outputs.branch }}
-          RECOVERY_VERSION: ${{ steps.recovery-branch.outputs.version }}
-        run: |
-          set -euo pipefail
-          release_branch="${NEW_BRANCH:-${RECOVERY_BRANCH}}"
-          version="${NEW_VERSION:-${RECOVERY_VERSION}}"
-          title="chore(release): v${version}"
-          body="$(cat <<EOF
-          Automated version-sync PR for release \`v${version}\`.
-
-          - Source PR: #${{ github.event.pull_request.number }}
-          - Release branch: \`${release_branch}\`
-          - The semver tag is published from the release branch commit.
-          - This PR syncs \`Cargo.toml\`, \`Cargo.lock\`, and \`helm/Chart.yaml\` back to \`main\`.
-          EOF
-          )"
-          pr_number="$(gh pr list --base main --head "${release_branch}" --state open --json number --jq '.[0].number')"
-          if [ -n "${pr_number}" ]; then
-            gh pr edit "${pr_number}" --title "${title}" --body "${body}"
-            exit 0
-          fi
-          gh pr create --base main --head "${release_branch}" --title "${title}" --body "${body}"
-      - name: Publish release tag
-        if: steps.release-state.outputs.state == 'needs-release'
-        env:
-          VERSION: ${{ steps.release-branch.outputs.version }}
         run: |
           set -euo pipefail
           if git rev-parse -q --verify "refs/tags/v${VERSION}" >/dev/null; then
             echo "Release tag v${VERSION} already exists."
             exit 0
           fi
+          git add Cargo.toml Cargo.lock helm/Chart.yaml
+          git commit -m "chore(release): v${VERSION}"
           git tag -a "v${VERSION}" -m "v${VERSION}"
           git push origin "refs/tags/v${VERSION}"
-      - name: Dispatch sync PR checks
-        if: steps.release-state.outputs.state == 'needs-release' || steps.release-state.outputs.state == 'pending-sync'
-        env:
-          GH_TOKEN: ${{ github.token }}
-          NEW_BRANCH: ${{ steps.release-branch.outputs.branch }}
-          RECOVERY_BRANCH: ${{ steps.recovery-branch.outputs.branch }}
-        run: |
-          set -euo pipefail
-          release_branch="${NEW_BRANCH:-${RECOVERY_BRANCH}}"
-          for workflow in rust-ci.yaml docker-image.yaml helm-chart.yaml sonarqube-cloud.yaml; do
-            gh workflow run "${workflow}" --ref "${release_branch}"
-          done
-      - name: Release already synced
-        if: steps.release-state.outputs.state == 'tagged-main'
-        run: echo "Skipping release because current main already matches the latest semver tag."
+      - name: Release already exists
+        if: steps.release-guard.outputs.already_released == 'true'
+        run: echo "Skipping release because current main already has a semver tag."
