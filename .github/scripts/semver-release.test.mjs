@@ -3,7 +3,9 @@ import test from "node:test";
 
 import {
 	bumpVersion,
+	hasOnlyNonReleaseChanges,
 	readCurrentVersion,
+	selectReleaseStrategy,
 	selectSemverBump,
 	updateCargoLockVersion,
 	updateCargoVersion,
@@ -47,6 +49,60 @@ test("selectSemverBump requires exactly one release label unless a default is su
 	assert.throws(
 		() => selectSemverBump(["docs"], "bogus"),
 		/unsupported default semver bump kind/,
+	);
+});
+
+test("hasOnlyNonReleaseChanges recognizes docs and GitHub automation changes", () => {
+	assert.equal(
+		hasOnlyNonReleaseChanges([
+			"README.md",
+			".github/workflows/semver-release.yaml",
+			".github/scripts/semver-release.mjs",
+			"docs/usage.md",
+			"renovate.json",
+		]),
+		true,
+	);
+	assert.equal(hasOnlyNonReleaseChanges(["helm/Chart.yaml"]), false);
+	assert.equal(hasOnlyNonReleaseChanges(["src/main.rs"]), false);
+	assert.equal(hasOnlyNonReleaseChanges([]), false);
+});
+
+test("selectReleaseStrategy skips unlabeled non-release changes only", () => {
+	assert.deepEqual(
+		selectReleaseStrategy(
+			["docs"],
+			["README.md", ".github/workflows/semver-release.yaml"],
+		),
+		{
+			shouldRelease: false,
+			reason: "non-release-files-only",
+		},
+	);
+	assert.deepEqual(selectReleaseStrategy([], [], "patch"), {
+		shouldRelease: false,
+		reason: "no-files-changed",
+	});
+	assert.deepEqual(selectReleaseStrategy(["docs"], ["src/main.rs"], "patch"), {
+		shouldRelease: true,
+		bump: "patch",
+		reason: "default-bump",
+	});
+	assert.deepEqual(
+		selectReleaseStrategy(["docs"], ["helm/Chart.yaml"], "patch"),
+		{
+			shouldRelease: true,
+			bump: "patch",
+			reason: "default-bump",
+		},
+	);
+	assert.deepEqual(
+		selectReleaseStrategy(["semver:minor"], ["README.md"], "patch"),
+		{
+			shouldRelease: true,
+			bump: "minor",
+			reason: "semver-label",
+		},
 	);
 });
 

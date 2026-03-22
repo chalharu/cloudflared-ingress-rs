@@ -18,6 +18,7 @@ jobs:
     permissions:
       actions: write
       contents: write
+      pull-requests: read
     steps:
       - name: Checkout main
         uses: actions/checkout@v6.0.2
@@ -59,16 +60,39 @@ jobs:
           if [ -n "${latest_tag}" ]; then
             echo "current_version=${latest_tag#v}" >> "${GITHUB_OUTPUT}"
           fi
+      - name: Collect merged PR files
+        id: pr-files
+        if: steps.release-guard.outputs.already_released != 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        run: |
+          set -euo pipefail
+          gh api \
+            --paginate \
+            -H "Accept: application/vnd.github+json" \
+            "/repos/${GITHUB_REPOSITORY}/pulls/${PR_NUMBER}/files" \
+            --jq '.[].filename' \
+            | node -e 'const fs = require("fs"); const files = fs.readFileSync(0, "utf8").split(/\r?\n/).filter(Boolean); process.stdout.write(`changed_files=${JSON.stringify(files)}\n`);' \
+            >> "${GITHUB_OUTPUT}"
+      - name: Decide release action
+        id: release-decision
+        if: steps.release-guard.outputs.already_released != 'true'
+        env:
+          CHANGED_FILES_JSON: ${{ steps.pr-files.outputs.changed_files }}
+          DEFAULT_SEMVER_BUMP: patch
+          PR_LABELS_JSON: ${{ toJson(github.event.pull_request.labels.*.name) }}
+        run: node .github/scripts/semver-release.mjs evaluate-release
       - name: Bump project version
         id: bump
-        if: steps.release-guard.outputs.already_released != 'true'
+        if: steps.release-guard.outputs.already_released != 'true' && steps.release-decision.outputs.should_release == 'true'
         env:
           CURRENT_VERSION: ${{ steps.current-version.outputs.current_version }}
           DEFAULT_SEMVER_BUMP: patch
           PR_LABELS_JSON: ${{ toJson(github.event.pull_request.labels.*.name) }}
         run: node .github/scripts/semver-release.mjs bump
       - name: Create release tag
-        if: steps.release-guard.outputs.already_released != 'true'
+        if: steps.release-guard.outputs.already_released != 'true' && steps.release-decision.outputs.should_release == 'true'
         env:
           VERSION: ${{ steps.bump.outputs.version }}
         run: |
@@ -82,7 +106,7 @@ jobs:
           git tag -a "v${VERSION}" -m "v${VERSION}"
           git push origin "refs/tags/v${VERSION}"
       - name: Dispatch Helm chart workflow for release tag
-        if: steps.release-guard.outputs.already_released != 'true'
+        if: steps.release-guard.outputs.already_released != 'true' && steps.release-decision.outputs.should_release == 'true'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           VERSION: ${{ steps.bump.outputs.version }}
@@ -105,7 +129,7 @@ jobs:
             sleep $((attempt * 2))
           done
       - name: Dispatch Docker image workflow for release tag
-        if: steps.release-guard.outputs.already_released != 'true'
+        if: steps.release-guard.outputs.already_released != 'true' && steps.release-decision.outputs.should_release == 'true'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           VERSION: ${{ steps.bump.outputs.version }}
@@ -127,6 +151,9 @@ jobs:
 
             sleep $((attempt * 2))
           done
+      - name: Release not required
+        if: steps.release-guard.outputs.already_released != 'true' && steps.release-decision.outputs.should_release != 'true'
+        run: echo "Skipping release because merged changes only touch non-release files."
       - name: Release already exists
         if: steps.release-guard.outputs.already_released == 'true'
         run: echo "Skipping release because current main already has a semver tag."

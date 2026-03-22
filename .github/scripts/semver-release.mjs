@@ -2,6 +2,15 @@ import { appendFile, readFile, writeFile } from "node:fs/promises";
 import { pathToFileURL } from "node:url";
 
 export const SEMVER_LABELS = ["semver:major", "semver:minor", "semver:patch"];
+export const NON_RELEASE_FILE_PATTERNS = [
+	/^\.github\//,
+	/(^|\/)[^/]+\.md$/,
+	/^LICENSE$/,
+	/^renovate\.json$/,
+	/^sonar-project\.properties$/,
+];
+
+const SUPPORTED_SEMVER_BUMPS = ["major", "minor", "patch"];
 
 const semverPattern =
 	/^(?<major>0|[1-9]\d*)\.(?<minor>0|[1-9]\d*)\.(?<patch>0|[1-9]\d*)(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?$/;
@@ -27,6 +36,14 @@ function ensureStringArray(value, name) {
 	return value;
 }
 
+function ensureSupportedSemverBump(bump) {
+	if (!SUPPORTED_SEMVER_BUMPS.includes(bump)) {
+		throw new Error(`unsupported default semver bump kind: ${bump}`);
+	}
+
+	return bump;
+}
+
 export function parseSemver(version) {
 	const match = semverPattern.exec(version);
 	if (!match?.groups) {
@@ -45,11 +62,7 @@ export function selectSemverBump(labels, defaultBump) {
 
 	if (matched.length === 0) {
 		if (defaultBump) {
-			if (!["major", "minor", "patch"].includes(defaultBump)) {
-				throw new Error(`unsupported default semver bump kind: ${defaultBump}`);
-			}
-
-			return defaultBump;
+			return ensureSupportedSemverBump(defaultBump);
 		}
 
 		throw new Error(
@@ -64,6 +77,44 @@ export function selectSemverBump(labels, defaultBump) {
 	}
 
 	return matched[0].slice("semver:".length);
+}
+
+export function hasOnlyNonReleaseChanges(changedFiles) {
+	const files = ensureStringArray(changedFiles, "changedFiles");
+
+	return (
+		files.length > 0 &&
+		files.every((path) =>
+			NON_RELEASE_FILE_PATTERNS.some((pattern) => pattern.test(path)),
+		)
+	);
+}
+
+export function selectReleaseStrategy(labels, changedFiles, defaultBump) {
+	const matched = labels.filter((label) => SEMVER_LABELS.includes(label));
+	const files = ensureStringArray(changedFiles, "changedFiles");
+
+	if (matched.length === 0 && files.length === 0) {
+		return {
+			shouldRelease: false,
+			reason: "no-files-changed",
+		};
+	}
+
+	if (matched.length === 0 && hasOnlyNonReleaseChanges(files)) {
+		return {
+			shouldRelease: false,
+			reason: "non-release-files-only",
+		};
+	}
+
+	const bump = selectSemverBump(labels, defaultBump);
+
+	return {
+		shouldRelease: true,
+		bump,
+		reason: matched.length === 1 ? "semver-label" : "default-bump",
+	};
 }
 
 export function bumpVersion(currentVersion, bump) {
@@ -214,6 +265,31 @@ export async function validateLabelsFromEnv() {
 	await writeOutputs({ bump });
 }
 
+export async function evaluateReleaseFromEnv() {
+	const labels = ensureStringArray(
+		readJsonEnv("PR_LABELS_JSON"),
+		"PR_LABELS_JSON",
+	);
+	const changedFiles = ensureStringArray(
+		readJsonEnv("CHANGED_FILES_JSON"),
+		"CHANGED_FILES_JSON",
+	);
+	const defaultBump = process.env.DEFAULT_SEMVER_BUMP;
+	const decision = selectReleaseStrategy(labels, changedFiles, defaultBump);
+
+	if (decision.shouldRelease) {
+		console.log(`release required via ${decision.reason}: ${decision.bump}`);
+	} else {
+		console.log("release skipped: merged changes only touch non-release files");
+	}
+
+	await writeOutputs({
+		should_release: decision.shouldRelease,
+		bump: decision.bump ?? "",
+		reason: decision.reason,
+	});
+}
+
 export async function bumpProjectVersionFromEnv() {
 	const labels = ensureStringArray(
 		readJsonEnv("PR_LABELS_JSON"),
@@ -262,11 +338,16 @@ async function main() {
 		case "validate-labels":
 			await validateLabelsFromEnv();
 			break;
+		case "evaluate-release":
+			await evaluateReleaseFromEnv();
+			break;
 		case "bump":
 			await bumpProjectVersionFromEnv();
 			break;
 		default:
-			throw new Error("usage: semver-release.mjs <validate-labels|bump>");
+			throw new Error(
+				"usage: semver-release.mjs <validate-labels|evaluate-release|bump>",
+			);
 	}
 }
 

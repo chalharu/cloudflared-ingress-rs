@@ -49,7 +49,7 @@ Types:
 
 ## 5. Release Labels
 
-- PRs targeting `main` can stay unlabeled during review. If more than one semver label is present, the guard fails. If no semver label is present at merge time, the release workflow defaults to `patch`.
+- PRs targeting `main` can stay unlabeled during review. If more than one semver label is present, the guard fails. If no semver label is present at merge time, the release workflow skips docs/GitHub-only changes and otherwise defaults to `patch`.
 - After merge, GitHub Actions derives the current release from the latest `vX.Y.Z` tag when one exists, creates an isolated release-only commit with updated `Cargo.toml`, `Cargo.lock`, and `helm/Chart.yaml`, and pushes only the next matching tag.
 - The release tags are the source of truth for published versions. `main` stays pull-request-only, so the checked-in version metadata on `main` may lag behind the latest release and may intentionally use a `-dev` suffix as long as the repository still builds correctly.
 - Docker publishes `latest` and `sha-*` tags from `main`, refreshes `latest` on release tags, publishes `X.Y.Z`, `X.Y`, and `X` aliases for releases, and prunes older non-semver or untagged GHCR versions while retaining the newest configured set.

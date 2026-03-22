@@ -86,7 +86,7 @@ Documentation-only changes do not usually need the Rust validation suite, but st
 - `main` stays pull-request-only and should remain releasable.
 - Checked-in versions on `main` may carry a `-dev` suffix; release tags are the source of truth for published versions.
 - Released charts are published to GHCR as OCI artifacts and line up with the release version unless `image.tag` is overridden.
-- PRs targeting `main` may be unlabeled during review; if no semver label is present at merge time, release automation defaults to `patch`.
+- PRs targeting `main` may be unlabeled during review; if no semver label is present at merge time, release automation skips docs/GitHub-only changes and otherwise defaults to `patch`.
 
 ## Contribution flow
 
