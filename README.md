@@ -1,64 +1,80 @@
 # cloudflared-ingress-rs
 
-`cloudflared-ingress-rs` is a Rust-based Kubernetes controller and health server that turns Kubernetes `Ingress` objects into Cloudflare Tunnel configuration.
+`cloudflared-ingress-rs` is a Kubernetes controller that publishes matching `Ingress` resources through Cloudflare Tunnel. You keep using standard Kubernetes `Ingress` objects; the controller turns them into `CloudflaredTunnel` resources, provisions the Cloudflare tunnel and DNS records, and keeps the backing `cloudflared` workload in sync.
 
-It watches `Ingress` and `IngressClass` resources, renders a `CloudflaredTunnel` custom resource, provisions Cloudflare tunnels and DNS records, and keeps the backing `cloudflared` workload in sync.
+If you are developing on this repository, start with `DEVELOPERS.md`. Contribution policy lives in `CONTRIBUTING.md`.
 
-## What this repository contains
+## When to use it
 
-- A CLI binary for running the controllers or emitting the CRD YAML
-- A small Actix Web health server exposed on port `8080`
-- Kubernetes reconcilers for `Ingress` and `CloudflaredTunnel`
-- Helm and raw YAML assets for deployment
+Use this controller when you want to expose Kubernetes services through Cloudflare Tunnel without manually maintaining tunnel configuration or DNS records for each application.
+
+## What it manages
+
+- Watches `Ingress` and `IngressClass` resources
+- Renders a `CloudflaredTunnel` custom resource from matching ingress rules
+- Creates or updates the Cloudflare tunnel and DNS CNAME records
+- Stores rendered tunnel configuration in Kubernetes Secrets
+- Runs and updates a managed `cloudflared` Deployment
 
 ## How it works
 
-1. `src/controllers/ingress.rs` watches `Ingress` and `IngressClass`.
-2. Matching ingress rules are converted into a `CloudflaredTunnel` custom resource.
-3. `src/controllers/cloudflared.rs` reconciles that CRD with Cloudflare tunnels, DNS CNAME records, Kubernetes Secrets, and a Deployment running `cloudflared`.
-4. `src/main.rs` runs both controllers together with the health server.
+1. Apply or reference an `IngressClass` whose `spec.controller` matches the controller string.
+2. Create an `Ingress` that uses that class.
+3. The controller renders or updates a `CloudflaredTunnel` resource for that `IngressClass` from the matching ingress rules.
+4. A second reconciler provisions the Cloudflare tunnel, DNS records, Secrets, and managed `cloudflared` workload.
 
-## Repository layout
+## Before you begin
 
-- `src/main.rs`: CLI entrypoint, health routes, controller startup
-- `src/cli.rs`: command-line and environment parsing
-- `src/error.rs`: shared error types
-- `src/controllers/ingress.rs`: `Ingress` -> `CloudflaredTunnel` reconciliation
-- `src/controllers/cloudflared.rs`: Cloudflare and Kubernetes reconciliation for the CRD
-- `src/controllers/cloudflared/*.rs`: Cloudflare API, config rendering, CRD definitions, and Kubernetes helper modules
-- `helm/`: Helm chart assets
-- `yaml/`: raw manifest assets
+- A Kubernetes cluster you can deploy controllers into
+- A Cloudflare account with permission to manage Tunnels and DNS for the zone or zones you want to publish
+- A Cloudflare account ID
+- A Cloudflare API token for tunnel and DNS management
+- Helm if you plan to install the published chart
 
-## Requirements
+## Quick start with Helm
 
-- Rust `1.94` or newer
-- Access to a Kubernetes cluster
-- A Cloudflare account with tunnel and DNS permissions
-- A Cloudflare API token and account ID
+Released charts are published at `oci://ghcr.io/chalharu/charts/cloudflared-ingress`.
 
-### Cloudflare permissions
+### 1. Create a namespace and credentials secret
 
-The controller needs a token that can manage Cloudflare tunnels and DNS records for the zones you want to expose.
+```bash
+kubectl create namespace cloudflared-ingress-system
 
-### Kubernetes permissions
+kubectl -n cloudflared-ingress-system create secret generic cloudflare-credentials \
+  --from-literal=ACCOUNT_ID=<cloudflare-account-id> \
+  --from-literal=ACCOUNT_TOKEN=<cloudflare-api-token>
+```
 
-The controller needs RBAC that allows it to watch `Ingress`, `IngressClass`, `Service`, and `CloudflaredTunnel` resources and to manage Secrets and Deployments in the target namespace. The deployment assets under `helm/` and `yaml/` are the intended place to provide those permissions.
+The chart passes `ACCOUNT_ID` and `ACCOUNT_TOKEN` into the controller CLI. Optional settings such as `INGRESS_CLASS`, `INGRESS_CONTROLLER`, or `CLOUDFLARE_TUNNEL_NAMESPACE` can be provided through chart `env` or `envFrom` values.
 
-## Getting started
+By default, the controller writes `CloudflaredTunnel`, Secret, and managed `cloudflared` resources into the `cloudflared` namespace. The quick start below keeps those resources in the install namespace instead.
 
-1. Prepare a Kubernetes cluster and install the CRD:
+### 2. Create a values file
 
-   ```bash
-   cargo run -- create-yaml | kubectl apply -f -
-   ```
+```yaml
+envFrom:
+  - secretRef:
+      name: cloudflare-credentials
+env:
+  - name: CLOUDFLARE_TUNNEL_NAMESPACE
+    value: cloudflared-ingress-system
+```
 
-2. Configure an `IngressClass` whose `spec.controller` matches the controller string you run this binary with.
+### 3. Install the chart
 
-3. Start the controller with a Cloudflare token and account ID.
+```bash
+helm upgrade --install cloudflared-ingress oci://ghcr.io/chalharu/charts/cloudflared-ingress \
+  --version <version> \
+  --namespace cloudflared-ingress-system \
+  --create-namespace \
+  -f values.yaml
+```
 
-4. Apply an `Ingress` that references the matching `IngressClass`.
+Use a released chart version for production installs. Released charts default to the matching controller image version. Override `image.tag` only if you intentionally want a different published image alias such as `latest` or `X.Y`.
 
-Example `IngressClass`:
+## Connect an `IngressClass`
+
+The controller only reconciles `IngressClass` objects whose `spec.controller` matches the configured ingress controller string. The default controller string is `chalharu.top/cloudflared-ingress-controller`.
 
 ```yaml
 apiVersion: networking.k8s.io/v1
@@ -69,7 +85,11 @@ spec:
   controller: chalharu.top/cloudflared-ingress-controller
 ```
 
-Example `Ingress`:
+If you override `INGRESS_CONTROLLER`, update the `IngressClass` to match.
+
+## Publish an application
+
+Create a standard `Ingress` that points at the matching `IngressClass`:
 
 ```yaml
 apiVersion: networking.k8s.io/v1
@@ -92,116 +112,67 @@ spec:
                   number: 80
 ```
 
-## CLI usage
+After reconciliation, the controller updates the `CloudflaredTunnel` for that `IngressClass`, the Cloudflare tunnel and DNS record, and the backing `cloudflared` resources needed to serve the ingress.
 
-Generate the CRD YAML:
+## What the controller creates
 
-```bash
-cargo run -- create-yaml
-```
+Expect the following managed state:
 
-Run the controllers locally:
+- A `CloudflaredTunnel` custom resource named after the `IngressClass`, in the configured tunnel namespace, populated from matching `Ingress` rules
+- Cloudflare tunnel state and DNS CNAMEs for the ingress hostnames
+- A config Secret and tunnel Secret referenced from `CloudflaredTunnel.status`
+- A managed `cloudflared` Deployment in the configured tunnel namespace, which defaults to `cloudflared`
 
-```bash
-cargo run -- run \
-  --cloudflare-token "$CLOUDFLARE_TOKEN" \
-  --cloudflare-account-id "$CLOUDFLARE_ACCOUNT_ID"
-```
-
-The process also starts an HTTP server on `0.0.0.0:8080` with:
-
-- `GET /health` -> `"healthy"`
-- `GET /` -> `200 OK`
-
-The health server is intended for lightweight liveness/readiness style checks around the controller process.
-
-## Configuration
-
-Every CLI option can also be supplied via environment variables because the project uses `clap`'s `env` support.
-
-| CLI flag | Environment variable | Default |
-| --- | --- | --- |
-| `--ingress-class` | `INGRESS_CLASS` | unset |
-| `--ingress-controller` | `INGRESS_CONTROLLER` | `chalharu.top/cloudflared-ingress-controller` |
-| `--cloudflare-token` | `CLOUDFLARE_TOKEN` | required |
-| `--cloudflare-account-id` | `CLOUDFLARE_ACCOUNT_ID` | required |
-| `--cloudflare-tunnel-prefix` | `CLOUDFLARE_TUNNEL_PREFIX` | `k8s-ingress-` |
-| `--cloudflare-tunnel-namespace` | `CLOUDFLARE_TUNNEL_NAMESPACE` | `cloudflared` |
-| `--deployment-replicas` | `DEPLOYMENT_REPLICAS` | `1` |
-
-## Development
-
-Common validation commands:
+You can inspect the generated custom resources with:
 
 ```bash
-cargo test --all-targets
-cargo fmt --all --check
-cargo clippy --workspace --all-targets -- -D warnings
-cargo build
+kubectl get cloudflaredtunnels -A
+kubectl describe cloudflaredtunnel <name> -n <namespace>
 ```
 
-This repository also includes containerized Rust helpers for environments where local toolchains are inconvenient:
+## Configuration reference
 
-```bash
-bash .github/skills/containerized-rust-ops/scripts/podman-rust.sh test
-bash .github/skills/containerized-rust-ops/scripts/podman-rust.sh clippy
-```
+When you run the binary directly, every CLI flag also has an environment variable. When you install with Helm, set optional controller values through chart `env` or `envFrom`.
 
-### Release automation
+| Purpose | CLI flag | Environment variable | Default |
+| --- | --- | --- | --- |
+| Restrict reconciliation to one `IngressClass` name | `--ingress-class` | `INGRESS_CLASS` | unset |
+| Match `IngressClass.spec.controller` | `--ingress-controller` | `INGRESS_CONTROLLER` | `chalharu.top/cloudflared-ingress-controller` |
+| Cloudflare API token | `--cloudflare-token` | `CLOUDFLARE_TOKEN` | required |
+| Cloudflare account ID | `--cloudflare-account-id` | `CLOUDFLARE_ACCOUNT_ID` | required |
+| Prefix for generated tunnel names | `--cloudflare-tunnel-prefix` | `CLOUDFLARE_TUNNEL_PREFIX` | `k8s-ingress-` |
+| Namespace for managed `cloudflared` resources | `--cloudflare-tunnel-namespace` | `CLOUDFLARE_TUNNEL_NAMESPACE` | `cloudflared` |
+| Replica count for the managed `cloudflared` Deployment | `--deployment-replicas` | `DEPLOYMENT_REPLICAS` | `1` |
 
-- PRs targeting `main` can stay unlabeled during review. If more than one semver label is present, the guard fails. If no semver label is present at merge time, the release workflow defaults to `patch`.
-- The merge-to-`main` release workflow derives the current release from the latest `vX.Y.Z` tag when one exists, then creates an isolated release-only commit with updated `Cargo.toml`, `Cargo.lock`, and `helm/Chart.yaml` and pushes only the new `vX.Y.Z` tag.
-- Release tags are the source of truth for published versions. Because `main` remains pull-request-only, the checked-in version metadata on `main` may lag behind the latest release tag and may intentionally use a `-dev` suffix as long as the repository still builds correctly.
-- The Helm chart defaults to `latest` while the checked-in `appVersion` carries a `-dev` suffix on `main`; release-tagged charts default to the matching semantic version unless `image.tag` is overridden.
-- Release tags also publish the Helm chart to GHCR as an OCI artifact at `oci://ghcr.io/chalharu/charts/cloudflared-ingress`. Helm OCI installs use the exact chart version tag because Helm requires the OCI tag to match the packaged chart version.
-- Because GitHub suppresses downstream `push` workflows triggered by the default `GITHUB_TOKEN`, the semver release workflow explicitly dispatches the Helm chart and Docker image workflows on the new tag.
-- Docker publishes `latest` and `sha-*` tags from `main`, refreshes `latest` on release tags, publishes `X.Y.Z`, `X.Y`, and `X` aliases for releases, and prunes older non-semver or untagged GHCR versions while retaining the newest configured set.
+For the published Helm chart, provide the required credentials as container environment variables named `ACCOUNT_ID` and `ACCOUNT_TOKEN`, because the chart passes them to the controller as CLI arguments.
 
-GitHub Actions also runs SonarQube Cloud analysis via `.github/workflows/sonarqube-cloud.yaml`. That workflow targets the checked-in `chalharu_cloudflared-ingress-rs` project, generates Rust coverage with `cargo llvm-cov`, imports `target/llvm-cov/lcov.info`, and expects the `SONAR_TOKEN` repository secret to remain configured.
+If you leave `CLOUDFLARE_TUNNEL_NAMESPACE` at its default `cloudflared`, make sure that namespace exists before the controller reconciles resources.
 
-Contribution conventions are documented in `CONTRIBUTING.md`.
+## Health and operations
 
-## Deployment assets
+The controller process also starts an HTTP server on `0.0.0.0:8080` with:
 
-- `helm/` contains chart assets for chart-driven installs
-- `yaml/` contains raw manifests for environments that prefer plain Kubernetes YAML
+- `GET /health` returning `"healthy"`
+- `GET /` returning `200 OK`
 
-### Install from the published Helm chart
+These endpoints are suitable for basic liveness and readiness style checks around the controller process.
 
-Released charts are published to GHCR as OCI artifacts. Install the chart with the exact release version because Helm requires the OCI tag to match the packaged chart version.
+This repository also includes:
 
-```bash
-helm show values oci://ghcr.io/chalharu/charts/cloudflared-ingress \
-  --version <version>
-```
+- `helm/` for the published installable chart
+- `yaml/crd.yaml` for the standalone CRD manifest
+- `yaml/ingressclass.yaml` for a sample `IngressClass` manifest
 
-```bash
-helm upgrade --install cloudflared-ingress oci://ghcr.io/chalharu/charts/cloudflared-ingress \
-  --version <version> \
-  --namespace cloudflared-ingress-system \
-  --create-namespace
-```
-
-The chart defaults to `ghcr.io/chalharu/cloudflared-ingress-rs:<appVersion>` on releases and `:latest` on the checked-in `-dev` chart. If you want the published controller image aliases instead, override `image.tag` explicitly:
-
-```bash
-helm upgrade --install cloudflared-ingress oci://ghcr.io/chalharu/charts/cloudflared-ingress \
-  --version <version> \
-  --namespace cloudflared-ingress-system \
-  --create-namespace \
-  --set image.tag=latest
-```
-
-Released controller images also publish `latest`, `<version>`, `<major>.<minor>`, and `<major>`, so `--set image.tag=<tag>` can pin the chart to the exact release tag or to a semver alias without changing the chart version.
+If you build the binary from source, `cargo run -- create-yaml` prints the current CRD YAML.
 
 ## Troubleshooting
 
-- If an `Ingress` is not being picked up, check that its `ingressClassName` points at an `IngressClass` whose `spec.controller` matches the configured `--ingress-controller` value.
-- If DNS records are not being created, confirm the Cloudflare token has permission to manage tunnels and DNS for the target zone.
-- If the managed `cloudflared` Deployment does not update, inspect the generated `CloudflaredTunnel` resource and the Secrets referenced from its status.
+- If an `Ingress` is not being picked up, confirm `spec.ingressClassName` points at an `IngressClass` whose `spec.controller` matches the configured `INGRESS_CONTROLLER`.
+- If tunnel or DNS reconciliation fails, confirm the Cloudflare token can manage both Tunnels and DNS records for the target zone.
+- If the managed `cloudflared` Deployment is missing or stale, inspect the related `CloudflaredTunnel` status and the referenced Secrets.
+- If you install with Helm, verify the pod receives `ACCOUNT_ID` and `ACCOUNT_TOKEN` from your Secret via `env` or `envFrom`.
 
-## Notes
+## More docs
 
-- The controller only reconciles `IngressClass` objects whose controller string matches the configured ingress controller.
-- Rendered Cloudflared configuration is stored in Kubernetes Secrets and mounted into the managed Deployment.
-- The default Cloudflared image is defined in `src/controllers/cloudflared.rs`.
+- `DEVELOPERS.md` for architecture, local development, validation, and release workflow
+- `CONTRIBUTING.md` for contribution policy and commit and branch rules

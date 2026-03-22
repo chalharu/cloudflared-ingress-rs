@@ -2,6 +2,8 @@
 
 This document is the source of truth for contribution rules.
 
+For repository layout, local setup, and day-to-day development workflow, see `DEVELOPERS.md`. For product installation and operations, see `README.md`.
+
 ## 1. Development Flow
 
 1. Create a branch from `main`.
