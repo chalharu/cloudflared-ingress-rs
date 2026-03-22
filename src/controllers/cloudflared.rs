@@ -98,7 +98,7 @@ fn desired_dns_records(
                 .map(|zone| (zone.name.as_str(), zone.id.as_str())),
         )
         .map(str::to_string) else {
-            return Err(Error::illegal_document());
+            return Err(Error::cloudflare_zone_not_found(ingress.hostname.clone()));
         };
         dns_list.insert((ingress.hostname.clone(), zone_id));
     }
@@ -854,7 +854,10 @@ mod tests {
             &[zone("zone-a", "example.com")],
         );
 
-        assert!(matches!(result, Err(Error::IllegalDocument { .. })));
+        assert!(matches!(
+            result,
+            Err(Error::CloudflareZoneNotFound { hostname, .. }) if hostname == "api.other.com"
+        ));
     }
 
     #[test]

@@ -1,0 +1,59 @@
+name: Semver label guard
+
+on:
+  pull_request:
+    branches: [ "main" ]
+    paths:
+      - '.github/scripts/**'
+      - '.github/workflows/semver-label.yaml'
+      - '.github/workflows/semver-release.yaml'
+  pull_request_target:
+    branches: [ "main" ]
+    types:
+      - opened
+      - reopened
+      - synchronize
+      - ready_for_review
+      - labeled
+      - unlabeled
+
+permissions:
+  contents: read
+
+jobs:
+  release-helper-tests:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6.0.2
+      - name: Run release helper tests
+        run: node --test .github/scripts/*.test.mjs
+
+  ensure-semver-label:
+    if: github.event_name == 'pull_request_target'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Validate semver label state
+        env:
+          PR_LABELS_JSON: ${{ toJson(github.event.pull_request.labels.*.name) }}
+        run: |
+          node <<'EOF'
+          const semverLabels = ["semver:major", "semver:minor", "semver:patch"];
+
+          const labels = JSON.parse(process.env.PR_LABELS_JSON ?? "[]");
+          const matched = labels.filter((label) => semverLabels.includes(label));
+
+          if (matched.length > 1) {
+            throw new Error(`expected at most one semver label, found: ${matched.join(", ")}`);
+          }
+
+          if (matched.length === 1) {
+            console.log(`semver label already set: ${matched[0]}`);
+            process.exit(0);
+          }
+
+          console.log(
+            "no semver label is set yet; review-time checks stay green and merge-time release defaults to semver:patch",
+          );
+          EOF
