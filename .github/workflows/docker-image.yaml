@@ -104,7 +104,7 @@ jobs:
           touch "${RUNNER_TEMP}/digests/${digest#sha256:}"
       - name: Upload digest
         if: env.PUBLISH_DOCKER_IMAGE == 'true'
-        uses: actions/upload-artifact@v7.0.0
+        uses: actions/upload-artifact@v7.0.1
         with:
           name: digests-${{ matrix.arch }}
           path: ${{ runner.temp }}/digests/*
