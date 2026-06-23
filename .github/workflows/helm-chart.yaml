@@ -28,7 +28,7 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v7.0.0
       - name: Set up Helm
-        uses: Azure/setup-helm@dda3372f752e03dde6b3237bc9431cdc2f7a02a2 # v5.0.0
+        uses: Azure/setup-helm@9bc31f4ebc9c6b171d7bfbaa5d006ae7abdb4310 # v5.0.1
         with:
           version: ${{ env.HELM_VERSION }}
       - name: Lint chart
@@ -86,7 +86,7 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v7.0.0
       - name: Set up Helm
-        uses: Azure/setup-helm@dda3372f752e03dde6b3237bc9431cdc2f7a02a2 # v5.0.0
+        uses: Azure/setup-helm@9bc31f4ebc9c6b171d7bfbaa5d006ae7abdb4310 # v5.0.1
         with:
           version: ${{ env.HELM_VERSION }}
       - name: Prime kind tool cache
@@ -229,7 +229,7 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v7.0.0
       - name: Set up Helm
-        uses: Azure/setup-helm@dda3372f752e03dde6b3237bc9431cdc2f7a02a2 # v5.0.0
+        uses: Azure/setup-helm@9bc31f4ebc9c6b171d7bfbaa5d006ae7abdb4310 # v5.0.1
         with:
           version: ${{ env.HELM_VERSION }}
       - name: Determine release version
