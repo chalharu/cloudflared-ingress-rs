@@ -77,7 +77,7 @@ jobs:
           labels: ${{ steps.meta.outputs.labels }}
           cache-from: type=gha,scope=docker-${{ matrix.arch }}
           cache-to: type=gha,mode=max,scope=docker-${{ matrix.arch }}
-      - uses: docker/login-action@af1e73f918a031802d376d3c8bbc3fe56130a9b0 # v4.4.0
+      - uses: docker/login-action@06fb636fac595d6fb4b28a5dfcb21a6f5091859c # v4.5.0
         name: Docker login
         if: env.PUBLISH_DOCKER_IMAGE == 'true'
         with:
@@ -121,7 +121,7 @@ jobs:
       - name: Fail if any native build failed
         if: needs.build-platform.result != 'success'
         run: exit 1
-      - uses: docker/login-action@af1e73f918a031802d376d3c8bbc3fe56130a9b0 # v4.4.0
+      - uses: docker/login-action@06fb636fac595d6fb4b28a5dfcb21a6f5091859c # v4.5.0
         name: Docker login
         if: needs.build-platform.result == 'success' && env.PUBLISH_DOCKER_IMAGE == 'true'
         with:
