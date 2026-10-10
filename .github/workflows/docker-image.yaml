@@ -148,7 +148,7 @@ jobs:
             type=semver,pattern={{major}},enable=${{ startsWith(github.ref, 'refs/tags/v') }}
       - name: Download digests
         if: needs.build-platform.result == 'success' && env.PUBLISH_DOCKER_IMAGE == 'true'
-        uses: actions/download-artifact@v8.0.1
+        uses: actions/download-artifact@v8.0.2
         with:
           path: ${{ runner.temp }}/digests
           pattern: digests-*
