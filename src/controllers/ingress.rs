@@ -23,7 +23,6 @@ use kube::{
     runtime::{
         Controller, WatchStreamExt as _,
         controller::Action,
-        metadata_watcher,
         reflector::{self, ObjectRef},
         watcher::{Config, watcher},
     },
@@ -395,12 +394,12 @@ struct Context {
 async fn run_controller(client: Client, context: Arc<Context>) {
     info!("Starting controller for Ingress");
 
-    let api_ingressclass = Api::<IngressClass>::all(client.clone());
+    let api_ingressclass = Api::<PartialIngressClass>::all(client.clone());
     let api_ingress = Api::<Ingress>::all(client);
     let (reader_ingressclass, writer_ingressclass) = reflector::store();
 
-    // controller main stream from metadata_watcher
-    let stream_ingressclass = metadata_watcher(api_ingressclass, Config::default())
+    // controller main stream from metadata watcher
+    let stream_ingressclass = watcher(api_ingressclass, Config::default())
         .default_backoff()
         .reflect(writer_ingressclass)
         .applied_objects();
