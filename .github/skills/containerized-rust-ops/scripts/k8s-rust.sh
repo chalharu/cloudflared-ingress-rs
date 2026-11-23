@@ -92,7 +92,7 @@ namespace="${CONTROL_PLANE_K8S_NAMESPACE:-}"
 sccache_version="${SCCACHE_VERSION:-0.14.0}"
 sccache_release_base_url="${SCCACHE_RELEASE_BASE_URL:-https://github.com/mozilla/sccache/releases/download}"
 sccache_bootstrap_jobs="${SCCACHE_BOOTSTRAP_JOBS:-1}"
-cargo_llvm_cov_version="${CARGO_LLVM_COV_VERSION:-0.8.5}"
+cargo_llvm_cov_version="${CARGO_LLVM_COV_VERSION:-0.9.2}"
 cargo_llvm_cov_release_base_url="${CARGO_LLVM_COV_RELEASE_BASE_URL:-https://github.com/taiki-e/cargo-llvm-cov/releases}"
 enable_cargo_llvm_cov=0
 if [[ "${#cmd[@]}" -ge 2 && "${cmd[0]}" == "cargo" && "${cmd[1]}" == "llvm-cov" ]]; then

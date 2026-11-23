@@ -11,11 +11,11 @@ expected_checksum_for_asset() {
   asset="$2"
 
   case "${version}:${asset}" in
-    "0.8.5:cargo-llvm-cov-x86_64-unknown-linux-gnu.tar.gz")
-      printf '%s\n' "7e62d664f5133d43d33a3b11138c93feff98bd71e953ddc260ea8ddf360a37c6"
+    "0.9.2:cargo-llvm-cov-x86_64-unknown-linux-gnu.tar.gz")
+      printf '%s\n' "1e0ed5c64f11e9217f7b9d7c776b3125eab26f27d49313919c909881a2fc7cff"
       ;;
-    "0.8.5:cargo-llvm-cov-aarch64-unknown-linux-gnu.tar.gz")
-      printf '%s\n' "8248a6d5dcb47307c2ef6d5815f90bca07d04a6f1acd06b658f689cb2d8247d9"
+    "0.9.2:cargo-llvm-cov-aarch64-unknown-linux-gnu.tar.gz")
+      printf '%s\n' "150331cd34177e52ec9aed2e32dfe624714030752b5436595281af15c778e38e"
       ;;
     *)
       return 1
@@ -88,7 +88,7 @@ target_bin="${cargo_home}/bin/cargo-llvm-cov"
 [ -x "${target_bin}" ] && exit 0
 
 mkdir -p "${cargo_home}/bin"
-version="${CARGO_LLVM_COV_VERSION:-0.8.5}"
+version="${CARGO_LLVM_COV_VERSION:-0.9.2}"
 base_url="${CARGO_LLVM_COV_RELEASE_BASE_URL:-https://github.com/taiki-e/cargo-llvm-cov/releases}"
 
 install_from_release "${version}" "${base_url}" "${target_bin}"
