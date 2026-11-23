@@ -71,14 +71,7 @@ fn deployment_changed(before: Option<&Deployment>, after: &Deployment) -> bool {
 }
 
 fn deployment_selector_changed(current: &Deployment, desired: &Deployment) -> bool {
-    current
-        .spec
-        .as_ref()
-        .map(|spec| spec.selector.match_labels.as_ref())
-        != desired
-            .spec
-            .as_ref()
-            .map(|spec| spec.selector.match_labels.as_ref())
+    current.spec.selector.match_labels.as_ref() != desired.spec.selector.match_labels.as_ref()
 }
 
 fn secret_changed(before: Option<&Secret>, after: &Secret) -> bool {
@@ -108,7 +101,7 @@ fn cloudflared_deployment(
             owner_references: owner_ref,
             ..Default::default()
         },
-        spec: Some(DeploymentSpec {
+        spec: DeploymentSpec {
             replicas: Some(replicas),
             selector: LabelSelector {
                 match_labels: Some(deployment_labels(&selector_id)),
@@ -153,7 +146,7 @@ fn cloudflared_deployment(
                 }),
             },
             ..Default::default()
-        }),
+        },
         ..Default::default()
     }
 }
@@ -395,8 +388,8 @@ mod tests {
             Some(vec![owner_reference()]),
         );
 
-        let spec = deployment.spec.expect("deployment spec should exist");
-        let pod_spec = spec.template.spec.expect("pod spec should exist");
+        let spec = &deployment.spec;
+        let pod_spec = spec.template.spec.as_ref().expect("pod spec should exist");
         let pod_labels = spec
             .template
             .metadata
@@ -404,7 +397,7 @@ mod tests {
             .and_then(|metadata| metadata.labels.as_ref())
             .expect("pod labels should exist");
         let container = &pod_spec.containers[0];
-        let volume = &pod_spec.volumes.expect("volumes should exist")[0];
+        let volume = &pod_spec.volumes.as_ref().expect("volumes should exist")[0];
 
         assert_eq!(
             deployment.metadata.name.as_deref(),
@@ -454,9 +447,9 @@ mod tests {
 
         let container = &deployment
             .spec
-            .expect("deployment spec should exist")
             .template
             .spec
+            .as_ref()
             .expect("pod spec should exist")
             .containers[0];
 
@@ -495,7 +488,7 @@ mod tests {
                 generation: Some(1),
                 ..Default::default()
             },
-            spec: Some(DeploymentSpec {
+            spec: DeploymentSpec {
                 selector: LabelSelector {
                     match_labels: Some(BTreeMap::from([(
                         "app".to_string(),
@@ -504,7 +497,7 @@ mod tests {
                     ..Default::default()
                 },
                 ..Default::default()
-            }),
+            },
             ..Default::default()
         };
         let after_deployment = Deployment {
@@ -512,13 +505,13 @@ mod tests {
                 generation: Some(2),
                 ..Default::default()
             },
-            spec: Some(DeploymentSpec {
+            spec: DeploymentSpec {
                 selector: LabelSelector {
                     match_labels: Some(deployment_labels("uid-1")),
                     ..Default::default()
                 },
                 ..Default::default()
-            }),
+            },
             ..Default::default()
         };
 
@@ -533,7 +526,7 @@ mod tests {
                     generation: Some(1),
                     ..Default::default()
                 },
-                spec: Some(DeploymentSpec {
+                spec: DeploymentSpec {
                     selector: LabelSelector {
                         match_labels: Some(BTreeMap::from([(
                             "app".to_string(),
@@ -542,7 +535,7 @@ mod tests {
                         ..Default::default()
                     },
                     ..Default::default()
-                }),
+                },
                 ..Default::default()
             }
         ));
@@ -718,8 +711,9 @@ mod tests {
                     assert_eq!(
                         deployment
                             .spec
+                            .selector
+                            .match_labels
                             .as_ref()
-                            .and_then(|spec| spec.selector.match_labels.as_ref())
                             .and_then(|labels| labels.get(SELECTOR_ID_LABEL))
                             .map(String::as_str),
                         Some(migrated_owner_ref.uid.as_str())
