@@ -581,7 +581,6 @@ dependencies = [
  "base64 0.23.1",
  "clap",
  "cloudflare",
- "env_logger",
  "futures",
  "k8s-openapi",
  "kube",
@@ -852,29 +851,6 @@ dependencies = [
  "proc-macro2",
  "quote",
  "syn 3.0.10",
-]
-
-[[package]]
-name = "env_filter"
-version = "2.0.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "900d271a03799a1ee8d1ca9b19893b48ca674a9284fefcfb85f05e74ed314217"
-dependencies = [
- "log",
- "regex",
-]
-
-[[package]]
-name = "env_logger"
-version = "0.11.12"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "82bdfc6e01c305a3ea46ed815b06ac0b379d7c5eac588fa4464048d731c4dcdf"
-dependencies = [
- "anstream",
- "anstyle",
- "env_filter",
- "jiff 1.0.1",
- "log",
 ]
 
 [[package]]
