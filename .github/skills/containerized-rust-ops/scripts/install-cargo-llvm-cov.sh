@@ -85,10 +85,17 @@ install_from_release() {
 home_dir="${HOME:?HOME is required when CARGO_HOME is not set}"
 cargo_home="${CARGO_HOME:-${home_dir}/.cargo}"
 target_bin="${cargo_home}/bin/cargo-llvm-cov"
-[ -x "${target_bin}" ] && exit 0
 
 mkdir -p "${cargo_home}/bin"
 version="${CARGO_LLVM_COV_VERSION:-0.9.2}"
 base_url="${CARGO_LLVM_COV_RELEASE_BASE_URL:-https://github.com/taiki-e/cargo-llvm-cov/releases}"
+
+if [ -x "${target_bin}" ]; then
+  installed_version="$("${target_bin}" --version 2>/dev/null | awk '{print $2}' || true)"
+  if [ "${installed_version}" = "${version}" ]; then
+    exit 0
+  fi
+  printf 'install-cargo-llvm-cov.sh: replacing %s with %s\n' "${installed_version:-unknown}" "${version}" >&2
+fi
 
 install_from_release "${version}" "${base_url}" "${target_bin}"
