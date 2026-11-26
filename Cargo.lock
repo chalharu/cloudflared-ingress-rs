@@ -576,7 +576,7 @@ dependencies = [
 
 [[package]]
 name = "cloudflared-ingress-rs"
-version = "0.2.0-dev"
+version = "0.2.105"
 dependencies = [
  "actix-web",
  "base64 0.23.1",
